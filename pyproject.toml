@@ -1,0 +1,46 @@
+[project]
+name = "steng"
+version = "0.1.0"
+description = "Structural engineering models as Polars DataFrames: read ETABS and SAFE, design reinforced concrete to Eurocode 2, and track results across model revisions."
+readme = "README.md"
+authors = [{ name = "Ho Zhu Yi" }]
+requires-python = ">=3.10"
+dependencies = [
+    "altair>=5.5",
+    "numpy>=2.0",
+    "pandera[polars]>=0.26",
+    "polars>=1.32",
+    "scipy>=1.13",
+    "shapely>=2.0",
+    "tqdm>=4.67",
+]
+
+[project.optional-dependencies]
+# Commercial software, Windows only: ETABS, SAFE and GSA through .NET, Compos through COM
+csi = ["pythonnet>=3.0"]
+gsa = ["pythonnet>=3.0"]
+compos = ["comtypes>=1.4"]
+adsec = ["oasys-adsec>=2.0", "pythonnet>=3.0"]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.30",
+    "nbconvert>=7.16",
+    "pytest>=8.4",
+    "ruff>=0.12",
+    "vl-convert-python>=1.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = ["F", "E9", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
