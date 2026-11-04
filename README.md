@@ -10,7 +10,15 @@ I built it for, and used it on, high-rise towers in Malaysia. This is the librar
 
 ## Why
 
-A tower's structural design runs through several programs: ETABS for the building, SAFE for the foundations, AdSec for section capacities, GSA and Compos for steelwork. Each has its own API, units and table formats, and a model goes through dozens of revisions. Moving results between them by spreadsheet is slow and error-prone, and it's hard to see what changed between revisions.
+A tower's structural design runs through several programs: ETABS for the building, SAFE for the foundations, AdSec for section capacities, GSA and Compos for steelwork. Each has its own API, units and table formats, and a model goes through dozens of revisions. The glue between them is usually a spreadsheet or a Grasshopper definition, and both get harder to trust as the project goes on: results are pasted in by hand, formulas hide in cells and wires, and nobody can say what changed since the last issue.
+
+Writing that glue as a Python library instead means:
+
+- **Every change is versioned.** A design check is plain text in git, so each change to it has a diff, a date and a reason, and can be reviewed before it's used. An Excel workbook or a `.gh` file can only be saved as copies, with no way to see what changed between them.
+- **The same code runs in a script or in Grasshopper.** On its own, it reads models, designs members and draws charts with no CAD open, on any machine. Inside a Grasshopper Python component, the same `Session` takes geometry from Rhino with `from_rhino` and bakes it back with `to_rhino`. The engineering lives in one place rather than copied between a definition and a script.
+- **A new revision is a rerun, not a redo.** When the model changes, the same script reads the new export and repeats every check and chart, and the results sit beside the earlier revisions for comparison.
+- **The checks can be tested and audited.** Each Eurocode 2 expression is a function named for its clause, and the tests compare them to hand calculations on every commit. A formula dragged down the wrong rows in a spreadsheet fails silently.
+- **It scales to the whole building.** Checking every pier at every storey under every load combination is one vectorised pass over a DataFrame, not a sheet of rows that takes minutes to recalculate.
 
 This library puts one schema in the middle. Every source is converted into the same tables (`story`, `column`, `wall`, `story_drift`, `force_pier`, ...), so a design check or a chart is written once and works on any model and any revision.
 
