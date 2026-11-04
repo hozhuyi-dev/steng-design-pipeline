@@ -1,10 +1,4 @@
-"""An interface that logs analysis model results
-
-Classes:
-LogMixin -- An interface
-
-Functions:
-log_* -- Return altair plots that are generic to all projects
+"""LogMixin: charts that track a model's results across its revisions
 """
 
 import altair as alt
@@ -12,15 +6,22 @@ import polars as pl
 
 
 class LogMixin:
-    def __init__(self):
-        """Initialise LOG_MODEL instance
-        """
+    """Charts that track a model across its revisions, for a Session
+
+    Each chart reads the session's child sessions through get_df: the charts over time show every
+    revision, and those up the building show the latest. Each returns an Altair chart to show in a
+    notebook or save.
+    """
+
+    def __init__(self) -> None:
+        """Nothing to set up: the charts read the session's attributes"""
         pass
 
     # ----- numbers -----
     
-    def log_members_vs_time(self):
-        """Return line chart of numbers against time
+    def log_members_vs_time(self) -> alt.TopLevelMixin:
+        """Line chart of the number of each kind of member in each revision: columns, beams, walls,
+        floors, restraints, and piles by section
         """
 
         df_restraint = (
@@ -121,8 +122,9 @@ class LogMixin:
     
     # ----- basereactions -----
 
-    def log_latest_base_fz(self):
-        """Return a pie chart of latest base reactions in fz
+    def log_latest_base_fz(self) -> alt.TopLevelMixin:
+        """Pie chart of the latest revision's vertical base reaction by load case, for the static and
+        response spectrum cases over 10 kN
         """
 
         return (
@@ -141,8 +143,8 @@ class LogMixin:
             .configure_scale(zero=False)
         )
     
-    def log_base_reaction_vs_time(self):
-        """Return line chart of base fz against time
+    def log_base_reaction_vs_time(self) -> alt.TopLevelMixin:
+        """Line chart of each static and response spectrum case's base reactions in each revision
         """
 
         df_fz = (
@@ -218,29 +220,10 @@ class LogMixin:
     
     # ----- reactions -----
 
-    def log_reaction_plan(self):
-        """Return a plot on plan of the sum of reactions
-        """
-
-        list_significant_fz = (
-            self.get_df_head("base_reaction", 1)
-            .filter(
-                pl.col("outputcasetype").is_in(["static", "response_spectrum"]),
-                pl.col("fz") > 10,
-            )
-            .unique("outputcase")
-            .select("outputcase")
-            .to_series().to_list()
-        )
-
-        # TODO
-
-        return list_significant_fz
-    
     # ----- storymass -----
 
-    def log_story_mass(self, head):
-        """Return a line chart of story mass
+    def log_story_mass(self, head: int) -> alt.TopLevelMixin:
+        """Line chart of the story mass up the building, for each of the latest head revisions
         """
 
         return (
@@ -275,8 +258,11 @@ class LogMixin:
 
     # ----- storyforce -----
     
-    def log_story_force_vx(self, outputcases):
-        """Return a plot of story shear vx with columns pier
+    def log_story_force_vx(self, outputcases: list[str]) -> alt.TopLevelMixin:
+        """Line chart of the story shear in X up the latest revision, for the given cases
+
+        The shear carried by the columns is drawn too, where they share the pier label "_columns",
+        as Etabs.assign_pier_columns sets. Cases ending in X are drawn with their sign flipped.
         """
 
         df_pier_columns = (
@@ -334,8 +320,11 @@ class LogMixin:
             .configure_scale(zero=False)
         )
     
-    def log_story_force_vy(self, outputcases):
-        """Return a plot of story shear vy with columns pier
+    def log_story_force_vy(self, outputcases: list[str]) -> alt.TopLevelMixin:
+        """Line chart of the story shear in Y up the latest revision, for the given cases
+
+        The shear carried by the columns is drawn too, where they share the pier label "_columns",
+        as Etabs.assign_pier_columns sets. Cases ending in X are drawn with their sign flipped.
         """
 
         df_pier_columns = (
@@ -393,8 +382,11 @@ class LogMixin:
             .configure_scale(zero=False)
         )
     
-    def log_story_force_mxx(self, outputcases):
-        """Return a plot of story moment mxx with columns pier
+    def log_story_force_mxx(self, outputcases: list[str]) -> alt.TopLevelMixin:
+        """Line chart of the overturning moment about X up the latest revision, for the given cases
+
+        The moment carried by the columns is drawn too, where they share the pier label "_columns",
+        as Etabs.assign_pier_columns sets. Cases ending in X are drawn with their sign flipped.
         """
 
         df_pier_columns = (
@@ -445,8 +437,11 @@ class LogMixin:
             .configure_scale(zero=False)
         )
     
-    def log_story_force_myy(self, outputcases):
-        """Return a plot of story moment myy with columns pier
+    def log_story_force_myy(self, outputcases: list[str]) -> alt.TopLevelMixin:
+        """Line chart of the overturning moment about Y up the latest revision, for the given cases
+
+        The moment carried by the columns is drawn too, where they share the pier label "_columns",
+        as Etabs.assign_pier_columns sets. Cases ending in X are drawn with their sign flipped.
         """
 
         df_pier_columns = (
@@ -505,8 +500,16 @@ class LogMixin:
     
     # ----- storydisplacement -----
 
-    def log_story_displacement_ux_max(self, outputcases, elev_min=None, elev_max=None, displacement_limit=500):
-        """Return a plot of story displacement ux max with limit
+    def log_story_displacement_ux_max(
+            self, outputcases: list[str], elev_min: float | None = None, elev_max: float | None = None,
+            displacement_limit: float = 500,
+        ) -> alt.TopLevelMixin:
+        """Line chart of the maximum story displacement in X up the latest revision, against height / displacement_limit
+
+        Args:
+            outputcases: The load cases and combinations to plot.
+            elev_min, elev_max: The elevations the limit line spans; the lowest and highest stories if None.
+            displacement_limit: The limit as a fraction of the height: 500 for H/500.
         """
 
         if elev_min is None:
@@ -564,8 +567,16 @@ class LogMixin:
             .configure_scale(zero=False)
         )
     
-    def log_story_displacement_uy_max(self, outputcases, elev_min=None, elev_max=None, displacement_limit=500):
-        """Return a plot of story displacement uy max with limit
+    def log_story_displacement_uy_max(
+            self, outputcases: list[str], elev_min: float | None = None, elev_max: float | None = None,
+            displacement_limit: float = 500,
+        ) -> alt.TopLevelMixin:
+        """Line chart of the maximum story displacement in Y up the latest revision, against height / displacement_limit
+
+        Args:
+            outputcases: The load cases and combinations to plot.
+            elev_min, elev_max: The elevations the limit line spans; the lowest and highest stories if None.
+            displacement_limit: The limit as a fraction of the height: 500 for H/500.
         """
 
         if elev_min is None:
@@ -624,8 +635,16 @@ class LogMixin:
     
     # ----- storydrift -----
 
-    def log_story_drift_ux_max(self, outputcases, elev_min=None, elev_max=None, drift_limit=300):
-        """Return a plot of story drift ux max with limit
+    def log_story_drift_ux_max(
+            self, outputcases: list[str], elev_min: float | None = None, elev_max: float | None = None,
+            drift_limit: float = 300,
+        ) -> alt.TopLevelMixin:
+        """Line chart of the maximum interstorey drift ratio in X up the latest revision, against 1 / drift_limit
+
+        Args:
+            outputcases: The load cases and combinations to plot.
+            elev_min, elev_max: The elevations the limit line spans; the lowest and highest stories if None.
+            drift_limit: The limit as a fraction of the storey height: 300 for h/300.
         """
 
         if elev_min is None:
@@ -688,8 +707,16 @@ class LogMixin:
             .configure_scale(zero=False)
         )
     
-    def log_story_drift_uy_max(self, outputcases, elev_min=None, elev_max=None, drift_limit=300):
-        """Return a plot of story drift uy max with limit
+    def log_story_drift_uy_max(
+            self, outputcases: list[str], elev_min: float | None = None, elev_max: float | None = None,
+            drift_limit: float = 300,
+        ) -> alt.TopLevelMixin:
+        """Line chart of the maximum interstorey drift ratio in Y up the latest revision, against 1 / drift_limit
+
+        Args:
+            outputcases: The load cases and combinations to plot.
+            elev_min, elev_max: The elevations the limit line spans; the lowest and highest stories if None.
+            drift_limit: The limit as a fraction of the storey height: 300 for h/300.
         """
 
         if elev_min is None:
@@ -754,8 +781,9 @@ class LogMixin:
     
     # ----- modal -----
 
-    def log_modal_period_vs_time(self):
-        """Return a plot of period of the model vs time
+    def log_modal_period_vs_time(self) -> alt.TopLevelMixin:
+        """Line chart of the period of the mode with the most mass participation in UX, UY and RZ,
+        in each revision
         """
 
         df_modal = (
@@ -817,8 +845,9 @@ class LogMixin:
             .configure_scale(zero=False)
         )
     
-    def log_modal_participation_vs_time(self):
-        """Return a plot of participation ratio of the model vs time
+    def log_modal_participation_vs_time(self) -> alt.TopLevelMixin:
+        """Line chart of the cumulative mass participation in each direction, over all the modes,
+        in each revision
         """
 
         df_modal = (
@@ -835,7 +864,7 @@ class LogMixin:
                         df_modal
                     ).mark_circle().encode(
                         alt.X("datetime:T").title("Date Time"),
-                        alt.Y("cumulative_sum:Q").title("Period [s]"),
+                        alt.Y("cumulative_sum:Q").title("Cumulative mass participation"),
                         alt.Color("direction:N"),
                         alt.Tooltip(["model", "direction", "cumulative_sum"]),
                     )
@@ -846,7 +875,7 @@ class LogMixin:
                         df_modal
                     ).mark_line().encode(
                         alt.X("datetime:T").title("Date Time"),
-                        alt.Y("cumulative_sum:Q").title("Period [s]"),
+                        alt.Y("cumulative_sum:Q").title("Cumulative mass participation"),
                         alt.Color("direction:N"),
                     )
                 )
@@ -857,8 +886,20 @@ class LogMixin:
     
     # ----- seismic -----
 
-    def log_seismic_sensitivity_x(self, contains_outputcase, elev_min=None, elev_max=None, sensitivity_limit=0.3):
-        """Return a plot of sensitivity in x
+    def log_seismic_sensitivity_x(
+            self, contains_outputcase: str, elev_min: float | None = None, elev_max: float | None = None,
+            sensitivity_limit: float = 0.3,
+        ) -> alt.TopLevelMixin:
+        """Line chart of the interstorey drift sensitivity coefficient in X up the latest revision
+
+        theta = P d / (V h), EN 1998-1 4.4.2.2(2): P the axial force and V the shear at the top of each
+        story, d its drift and h its height. Second-order effects may be neglected below 0.1, and
+        theta may not exceed 0.3, 4.4.2.2(4).
+
+        Args:
+            contains_outputcase: Regular expression the seismic cases match.
+            elev_min, elev_max: The elevations the limit line spans; the lowest and highest stories if None.
+            sensitivity_limit: The limit drawn.
         """
 
         if elev_min is None:
@@ -939,8 +980,20 @@ class LogMixin:
             .configure_scale(zero=False)
         )
     
-    def log_seismic_sensitivity_y(self, contains_outputcase, elev_min=None, elev_max=None, sensitivity_limit=0.3):
-        """Return a plot of sensitivity in y
+    def log_seismic_sensitivity_y(
+            self, contains_outputcase: str, elev_min: float | None = None, elev_max: float | None = None,
+            sensitivity_limit: float = 0.3,
+        ) -> alt.TopLevelMixin:
+        """Line chart of the interstorey drift sensitivity coefficient in Y up the latest revision
+
+        theta = P d / (V h), EN 1998-1 4.4.2.2(2): P the axial force and V the shear at the top of each
+        story, d its drift and h its height. Second-order effects may be neglected below 0.1, and
+        theta may not exceed 0.3, 4.4.2.2(4).
+
+        Args:
+            contains_outputcase: Regular expression the seismic cases match.
+            elev_min, elev_max: The elevations the limit line spans; the lowest and highest stories if None.
+            sensitivity_limit: The limit drawn.
         """
 
         if elev_min is None:

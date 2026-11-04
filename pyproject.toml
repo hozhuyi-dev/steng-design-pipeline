@@ -9,7 +9,7 @@ dependencies = [
     "altair>=5.5",
     "numpy>=2.0",
     "pandera[polars]>=0.26",
-    "polars>=1.32",
+    "polars>=1.32.3",
     "scipy>=1.13",
     "shapely>=2.0",
     "tqdm>=4.67",
@@ -25,6 +25,7 @@ adsec = ["oasys-adsec>=2.0", "pythonnet>=3.0"]
 [dependency-groups]
 dev = [
     "ipykernel>=6.30",
+    "matplotlib>=3.10.9",
     "nbconvert>=7.16",
     "pytest>=8.4",
     "ruff>=0.12",

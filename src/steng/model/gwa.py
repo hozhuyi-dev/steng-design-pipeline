@@ -1,11 +1,4 @@
-""" A library that allows gwa parsing and formatting.
-
-Classes:
-GWA -- A class that formats the given data to gwa format.
-
-Functions:
-from_det -- Read data from det_class library
-write_gwa -- Write to gwa any existing data
+"""Gwa: writes the standard model to GSA text files (.gwa)
 """
 
 import copy

@@ -23,6 +23,15 @@ def test_biaxial_exponent_5_39():
     np.testing.assert_allclose(ec2.exp5_39_alpha(n_ratio), [1.0, 1.25, 1.75, 2.0])
 
 
+def test_second_order_moment_5_33_without_first_order_moment():
+    # 5.8.8.2(1): M_2 = N_Ed e_2, whatever the first-order moment. A slender wall with no first-order
+    # moment out of plane still bows: 8977.5 kN at e_2 = 65.8 mm is 591 kNm
+    M_Ed, N_Ed, e_2 = np.array([0.0, 120.0, -120.0]), np.array([8977.5] * 3), np.array([65.8] * 3)
+    np.testing.assert_allclose(ec2.exp5_33_M_2(M_Ed, N_Ed, e_2), [590.72, 590.72, -590.72], rtol=1e-4)
+    # No second-order moment in tension
+    assert ec2.exp5_33_M_2(np.array([120.0]), np.array([-500.0]), np.array([65.8]))[0] == 0
+
+
 def test_creep_factor_for_relative_humidity_annex_b():
     # C30/37, f_cm = 38 MPa > 35 MPa, RH = 80%, h_0 = 300 mm: expressions B.3b and B.8c
     f_cm, h_0 = 38.0, 300.0

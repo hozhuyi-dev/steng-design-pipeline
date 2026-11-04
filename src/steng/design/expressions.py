@@ -1,6 +1,5 @@
-"""Functions built on numpy and sympy for reinforced concrete calculations
-
-Functions:
+"""Reinforced concrete quantities on NumPy arrays that EN 1992-1-1 leaves to the designer:
+effective depths, lever arms, bar areas and effective lengths
 """
 
 import numpy as np
@@ -74,20 +73,12 @@ def d(h, centroid):
 def d2(h, cover, dia_horz, dia_vert):
     return (h - cover - dia_horz - dia_vert / 2) * EFFECTIVE_DEPTH_FACTOR
 
-def d3(h, cover, dia_horz, dia_vert):
-    return h - cover - dia_horz - dia_vert / 2
-
-def d3_6(h, cover, dia_horz, dia_vert0, dia_vert1, dia_vert2, dia_vert3, dia_vert4, dia_vert5):
-    d3 = h - cover - dia_horz - dia_vert0 / 2
-    d3[dia_vert1 != 0] -= dia_vert0[dia_vert1 != 0] / 2 + np.maximum(dia_vert0[dia_vert1 != 0], 25) + dia_vert1[dia_vert1 != 0] / 2
-    d3[dia_vert2 != 0] -= dia_vert1[dia_vert2 != 0] / 2 + np.maximum(dia_vert1[dia_vert2 != 0], 25) + dia_vert2[dia_vert2 != 0] / 2
-    d3[dia_vert3 != 0] -= dia_vert2[dia_vert3 != 0] / 2 + np.maximum(dia_vert2[dia_vert3 != 0], 25) + dia_vert3[dia_vert3 != 0] / 2
-    d3[dia_vert4 != 0] -= dia_vert3[dia_vert4 != 0] / 2 + np.maximum(dia_vert3[dia_vert4 != 0], 25) + dia_vert4[dia_vert4 != 0] / 2
-    d3[dia_vert5 != 0] -= dia_vert4[dia_vert5 != 0] / 2 + np.maximum(dia_vert4[dia_vert5 != 0], 25) + dia_vert5[dia_vert5 != 0] / 2
+def d3(h, cover, dia_horz, *dia_vert):
+    """Effective depth to the innermost layer of vertical bars, each layer 25 mm or a bar apart"""
+    d3 = h - cover - dia_horz - dia_vert[0] / 2
+    for outer, inner in zip(dia_vert, dia_vert[1:]):
+        d3 = np.where(inner != 0, d3 - (outer / 2 + np.maximum(outer, 25) + inner / 2), d3)
     return d3
-
-def z5(d):
-    return 0.5 * d
 
 def z9(d):
     return 0.9 * d
@@ -95,17 +86,17 @@ def z9(d):
 def A_c(h, b_w):
     return h * b_w
 
-def A_s_wall_3(s_vert, dia_vert0, dia_vert1, dia_vert2, h):
-    A_vert0 = (dia_vert0 ** 2) / 4 * np.pi
-    A_vert1 = (dia_vert1 ** 2) / 4 * np.pi
-    A_vert2 = (dia_vert2 ** 2) / 4 * np.pi
-    return 2 * (A_vert0 + A_vert1 + A_vert2) * h / s_vert
+def A_s_wall(s_vert, h, *dia_vert):
+    """Vertical bars in a wall of length h: each layer on both faces at s_vert"""
+    return 2 * sum((dia ** 2) / 4 * np.pi for dia in dia_vert) * h / s_vert
 
-def A_s_wall(s_vert, dia_vert, h):
-    return 2 * (dia_vert ** 2) / 4 * np.pi * h / s_vert
+def A_s_column(n_vert, *dia_vert):
+    """Vertical bars in a column: n_vert bars in each layer"""
+    return n_vert * sum((dia ** 2) / 4 * np.pi for dia in dia_vert)
 
 def l_0(l, k):
     return l * k
 
-def l_02(l, k, beta):
+def l_0_restrained(l, k, beta):
+    """Effective length of a wall held on its sides, beta from EN 1992-1-1 Table 12.1"""
     return l * k * beta

@@ -1,10 +1,4 @@
-""" A library that allows det parsing and formatting.
-
-Interfaces:
-DET -- A class with etabs $et data parsed as polars DataFrame and methods for
-    post-processing.
-
-Functions:
+"""DetMixin: parses ETABS text files (.$et) into the standard model
 """
 
 import re

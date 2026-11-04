@@ -1,9 +1,7 @@
-"""A library of classes for adsec interface.
+"""Wrapper over Oasys AdSec: builds wall, column and pile sections and returns their
+force-moment curves and failure surfaces
 
-Classes:
-ADSEC -- A class for interfacing with adsec
-
-Functions:
+AdSec loads its .NET assemblies on import, so only steng.model.adsec imports this module, when used.
 """
 
 import math
@@ -137,46 +135,11 @@ class AdSec:
 
         return self
 
-    def _generate_section_rc_wall_u_1(self, cylinder_strength, rebar_type, polyline, axis_angle, thickness, cover, dia_horz, s_vert, dia_vert):
-        """Generate an adsec section of reinforced concrete walls given the perimeter"""
+    def _generate_section_rc_wall(self, section_type, cylinder_strength, rebar_type, polyline, axis_angle, thickness, cover, dia_horz, s_vert, *dia_vert):
+        """Generate an adsec section of a reinforced concrete wall given its polyline, with a layer of
+        vertical bars at s_vert for each non-zero diameter in dia_vert, the first the outermost"""
 
-        key = generate_key("rc_wall_u_1", cylinder_strength, rebar_type, polyline, axis_angle, thickness, cover, dia_horz, s_vert, dia_vert)
-
-        mat_concrete = self._get_standard_concrete(cylinder_strength)
-        mat_rebar = self._get_standard_rebar(rebar_type)
-
-        polyline = _rotate_by_axis_angle(polyline, axis_angle)
-        vertices = _convert_polyline_to_vertices(polyline, thickness / 1000)
-        polygon = IPolygon.Create()
-        for vertex in vertices:
-            polygon.Points.Add(IPoint.Create(
-                Length(float(vertex[0]), LengthUnit.Meter),
-                Length(float(vertex[1]), LengthUnit.Meter)
-            ))
-        profile = IPerimeterProfile.Create()
-        profile.SolidPolygon = polygon
-        section = ISection.Create(profile, mat_concrete)
-
-        section.Cover = ICover.Create(Length(float(cover), LengthUnit.Millimeter))
-
-        link_bar = IBarBundle.Create(mat_rebar, Length(float(dia_horz), LengthUnit.Millimeter), 1)
-        link_group = ILinkGroup.Create(link_bar)
-        section.ReinforcementGroups.Add(link_group)
-
-        vert_bar = IBarBundle.Create(mat_rebar, Length(float(dia_vert), LengthUnit.Millimeter), 1)
-        vert_layer = ILayerByBarPitch.Create(vert_bar, Length(float(s_vert), LengthUnit.Millimeter))
-        vert_group = IPerimeterGroup.Create()
-        vert_group.Layers.Add(vert_layer)
-        section.ReinforcementGroups.Add(vert_group)
-
-        self.section[key] = section
-
-        return self
-    
-    def _generate_section_rc_wall_u_3(self, cylinder_strength, rebar_type, polyline, axis_angle, thickness, cover, dia_horz, s_vert, dia_vert0, dia_vert1, dia_vert2):
-        """Generate an adsec section of reinforced concrete walls given the perimeter"""
-
-        key = generate_key("rc_wall_u_3", cylinder_strength, rebar_type, polyline, axis_angle, thickness, cover, dia_horz, s_vert, dia_vert0, dia_vert1, dia_vert2)
+        key = generate_key(section_type, cylinder_strength, rebar_type, polyline, axis_angle, thickness, cover, dia_horz, s_vert, *dia_vert)
 
         mat_concrete = self._get_standard_concrete(cylinder_strength)
         mat_rebar = self._get_standard_rebar(rebar_type)
@@ -199,136 +162,23 @@ class AdSec:
         link_group = ILinkGroup.Create(link_bar)
         section.ReinforcementGroups.Add(link_group)
 
-        vert_bar = IBarBundle.Create(mat_rebar, Length(float(dia_vert0), LengthUnit.Millimeter), 1)
-        vert_layer = ILayerByBarPitch.Create(vert_bar, Length(float(s_vert), LengthUnit.Millimeter))
         vert_group = IPerimeterGroup.Create()
-        vert_group.Layers.Add(vert_layer)
-        if dia_vert1 != 0:
-            vert_bar1 = IBarBundle.Create(mat_rebar, Length(float(dia_vert1), LengthUnit.Millimeter), 1)
-            vert_layer1 = ILayerByBarPitch.Create(vert_bar1, Length(float(s_vert), LengthUnit.Millimeter))
-            vert_group.Layers.Add(vert_layer1)
-        if dia_vert2 != 0:
-            vert_bar2 = IBarBundle.Create(mat_rebar, Length(float(dia_vert2), LengthUnit.Millimeter), 1)
-            vert_layer2 = ILayerByBarPitch.Create(vert_bar2, Length(float(s_vert), LengthUnit.Millimeter))
-            vert_group.Layers.Add(vert_layer2)
+        for k, dia in enumerate(dia_vert):
+            if k == 0 or dia != 0:
+                vert_bar = IBarBundle.Create(mat_rebar, Length(float(dia), LengthUnit.Millimeter), 1)
+                vert_layer = ILayerByBarPitch.Create(vert_bar, Length(float(s_vert), LengthUnit.Millimeter))
+                vert_group.Layers.Add(vert_layer)
         section.ReinforcementGroups.Add(vert_group)
 
         self.section[key] = section
 
         return self
     
-    def _generate_section_rc_wall_u_5(self, cylinder_strength, rebar_type, polyline, axis_angle, thickness, cover, dia_horz, s_vert, dia_vert0, dia_vert1, dia_vert2, dia_vert3, dia_vert4):
-        """Generate an adsec section of reinforced concrete walls given the perimeter"""
+    def _generate_section_rc_column(self, section_type, cylinder_strength, rebar_type, width, depth, cover, dia_horz, n_vert, *dia_vert):
+        """Generate an adsec section of a rectangular reinforced concrete column, with a layer of n_vert
+        bars around the perimeter for each non-zero diameter in dia_vert, the first the outermost"""
 
-        key = generate_key("rc_wall_u_5", cylinder_strength, rebar_type, polyline, axis_angle, thickness, cover, dia_horz, s_vert, dia_vert0, dia_vert1, dia_vert2, dia_vert3, dia_vert4)
-
-        mat_concrete = self._get_standard_concrete(cylinder_strength)
-        mat_rebar = self._get_standard_rebar(rebar_type)
-
-        polyline = _rotate_by_axis_angle(polyline, axis_angle)
-        vertices = _convert_polyline_to_vertices(polyline, thickness / 1000)
-        polygon = IPolygon.Create()
-        for vertex in vertices:
-            polygon.Points.Add(IPoint.Create(
-                Length(float(vertex[0]), LengthUnit.Meter),
-                Length(float(vertex[1]), LengthUnit.Meter)
-            ))
-        profile = IPerimeterProfile.Create()
-        profile.SolidPolygon = polygon
-        section = ISection.Create(profile, mat_concrete)
-
-        section.Cover = ICover.Create(Length(float(cover), LengthUnit.Millimeter))
-
-        link_bar = IBarBundle.Create(mat_rebar, Length(float(dia_horz), LengthUnit.Millimeter), 1)
-        link_group = ILinkGroup.Create(link_bar)
-        section.ReinforcementGroups.Add(link_group)
-
-        vert_bar = IBarBundle.Create(mat_rebar, Length(float(dia_vert0), LengthUnit.Millimeter), 1)
-        vert_layer = ILayerByBarPitch.Create(vert_bar, Length(float(s_vert), LengthUnit.Millimeter))
-        vert_group = IPerimeterGroup.Create()
-        vert_group.Layers.Add(vert_layer)
-        if dia_vert1 != 0:
-            vert_bar1 = IBarBundle.Create(mat_rebar, Length(float(dia_vert1), LengthUnit.Millimeter), 1)
-            vert_layer1 = ILayerByBarPitch.Create(vert_bar1, Length(float(s_vert), LengthUnit.Millimeter))
-            vert_group.Layers.Add(vert_layer1)
-        if dia_vert2 != 0:
-            vert_bar2 = IBarBundle.Create(mat_rebar, Length(float(dia_vert2), LengthUnit.Millimeter), 1)
-            vert_layer2 = ILayerByBarPitch.Create(vert_bar2, Length(float(s_vert), LengthUnit.Millimeter))
-            vert_group.Layers.Add(vert_layer2)
-        if dia_vert3 != 0:
-            vert_bar3 = IBarBundle.Create(mat_rebar, Length(float(dia_vert3), LengthUnit.Millimeter), 1)
-            vert_layer3 = ILayerByBarPitch.Create(vert_bar3, Length(float(s_vert), LengthUnit.Millimeter))
-            vert_group.Layers.Add(vert_layer3)
-        if dia_vert4 != 0:
-            vert_bar4 = IBarBundle.Create(mat_rebar, Length(float(dia_vert4), LengthUnit.Millimeter), 1)
-            vert_layer4 = ILayerByBarPitch.Create(vert_bar4, Length(float(s_vert), LengthUnit.Millimeter))
-            vert_group.Layers.Add(vert_layer4)
-        section.ReinforcementGroups.Add(vert_group)
-
-        self.section[key] = section
-
-        return self
-    
-    def _generate_section_rc_wall_u_6(self, cylinder_strength, rebar_type, polyline, axis_angle, thickness, cover, dia_horz, s_vert, dia_vert0, dia_vert1, dia_vert2, dia_vert3, dia_vert4, dia_vert5):
-        """Generate an adsec section of reinforced concrete walls given the perimeter"""
-
-        key = generate_key("rc_wall_u_6", cylinder_strength, rebar_type, polyline, axis_angle, thickness, cover, dia_horz, s_vert, dia_vert0, dia_vert1, dia_vert2, dia_vert3, dia_vert4, dia_vert5)
-
-        mat_concrete = self._get_standard_concrete(cylinder_strength)
-        mat_rebar = self._get_standard_rebar(rebar_type)
-
-        polyline = _rotate_by_axis_angle(polyline, axis_angle)
-        vertices = _convert_polyline_to_vertices(polyline, thickness / 1000)
-        polygon = IPolygon.Create()
-        for vertex in vertices:
-            polygon.Points.Add(IPoint.Create(
-                Length(float(vertex[0]), LengthUnit.Meter),
-                Length(float(vertex[1]), LengthUnit.Meter)
-            ))
-        profile = IPerimeterProfile.Create()
-        profile.SolidPolygon = polygon
-        section = ISection.Create(profile, mat_concrete)
-
-        section.Cover = ICover.Create(Length(float(cover), LengthUnit.Millimeter))
-
-        link_bar = IBarBundle.Create(mat_rebar, Length(float(dia_horz), LengthUnit.Millimeter), 1)
-        link_group = ILinkGroup.Create(link_bar)
-        section.ReinforcementGroups.Add(link_group)
-
-        vert_bar = IBarBundle.Create(mat_rebar, Length(float(dia_vert0), LengthUnit.Millimeter), 1)
-        vert_layer = ILayerByBarPitch.Create(vert_bar, Length(float(s_vert), LengthUnit.Millimeter))
-        vert_group = IPerimeterGroup.Create()
-        vert_group.Layers.Add(vert_layer)
-        if dia_vert1 != 0:
-            vert_bar1 = IBarBundle.Create(mat_rebar, Length(float(dia_vert1), LengthUnit.Millimeter), 1)
-            vert_layer1 = ILayerByBarPitch.Create(vert_bar1, Length(float(s_vert), LengthUnit.Millimeter))
-            vert_group.Layers.Add(vert_layer1)
-        if dia_vert2 != 0:
-            vert_bar2 = IBarBundle.Create(mat_rebar, Length(float(dia_vert2), LengthUnit.Millimeter), 1)
-            vert_layer2 = ILayerByBarPitch.Create(vert_bar2, Length(float(s_vert), LengthUnit.Millimeter))
-            vert_group.Layers.Add(vert_layer2)
-        if dia_vert3 != 0:
-            vert_bar3 = IBarBundle.Create(mat_rebar, Length(float(dia_vert3), LengthUnit.Millimeter), 1)
-            vert_layer3 = ILayerByBarPitch.Create(vert_bar3, Length(float(s_vert), LengthUnit.Millimeter))
-            vert_group.Layers.Add(vert_layer3)
-        if dia_vert4 != 0:
-            vert_bar4 = IBarBundle.Create(mat_rebar, Length(float(dia_vert4), LengthUnit.Millimeter), 1)
-            vert_layer4 = ILayerByBarPitch.Create(vert_bar4, Length(float(s_vert), LengthUnit.Millimeter))
-            vert_group.Layers.Add(vert_layer4)
-        if dia_vert5 != 0:
-            vert_bar5 = IBarBundle.Create(mat_rebar, Length(float(dia_vert5), LengthUnit.Millimeter), 1)
-            vert_layer5 = ILayerByBarPitch.Create(vert_bar5, Length(float(s_vert), LengthUnit.Millimeter))
-            vert_group.Layers.Add(vert_layer5)
-        section.ReinforcementGroups.Add(vert_group)
-
-        self.section[key] = section
-
-        return self
-    
-    def _generate_section_rc_column_1(self, cylinder_strength, rebar_type, width, depth, cover, dia_horz, n_vert, dia_vert):
-        """Generate an adsec section of reinforced concrete walls given the perimeter"""
-
-        key = generate_key("rc_column_u_1", cylinder_strength, rebar_type, width, depth, cover, dia_horz, n_vert, dia_vert)
+        key = generate_key(section_type, cylinder_strength, rebar_type, width, depth, cover, dia_horz, n_vert, *dia_vert)
 
         mat_concrete = self._get_standard_concrete(cylinder_strength)
         mat_rebar = self._get_standard_rebar(rebar_type)
@@ -342,45 +192,12 @@ class AdSec:
         link_group = ILinkGroup.Create(link_bar)
         section.ReinforcementGroups.Add(link_group)
 
-        vert_bar = IBarBundle.Create(mat_rebar, Length(float(dia_vert), LengthUnit.Millimeter), 1)
-        vert_layer = ILayerByBarCount.Create(n_vert, vert_bar)
         vert_group = IPerimeterGroup.Create()
-        vert_group.Layers.Add(vert_layer)
-        section.ReinforcementGroups.Add(vert_group)
-
-        self.section[key] = section
-
-        return self
-    
-    def _generate_section_rc_column_3(self, cylinder_strength, rebar_type, width, depth, cover, dia_horz, n_vert, dia_vert0, dia_vert1, dia_vert2):
-        """Generate an adsec section of reinforced concrete walls given the perimeter"""
-
-        key = generate_key("rc_column_u_3", cylinder_strength, rebar_type, width, depth, cover, dia_horz, n_vert, dia_vert0, dia_vert1, dia_vert2)
-
-        mat_concrete = self._get_standard_concrete(cylinder_strength)
-        mat_rebar = self._get_standard_rebar(rebar_type)
-        
-        profile = IRectangleProfile.Create(Length(float(width), LengthUnit.Millimeter), Length(float(depth), LengthUnit.Millimeter))
-        section = ISection.Create(profile, mat_concrete)
-
-        section.Cover = ICover.Create(Length(float(cover), LengthUnit.Millimeter))
-
-        link_bar = IBarBundle.Create(mat_rebar, Length(float(dia_horz), LengthUnit.Millimeter), 1)
-        link_group = ILinkGroup.Create(link_bar)
-        section.ReinforcementGroups.Add(link_group)
-
-        vert_bar0 = IBarBundle.Create(mat_rebar, Length(float(dia_vert0), LengthUnit.Millimeter), 1)
-        vert_layer0 = ILayerByBarCount.Create(n_vert, vert_bar0)
-        vert_group = IPerimeterGroup.Create()
-        vert_group.Layers.Add(vert_layer0)
-        if dia_vert1 != 0:
-            vert_bar1 = IBarBundle.Create(mat_rebar, Length(float(dia_vert1), LengthUnit.Millimeter), 1)
-            vert_layer1 = ILayerByBarCount.Create(n_vert, vert_bar1)
-            vert_group.Layers.Add(vert_layer1)
-        if dia_vert2 != 0:
-            vert_bar2 = IBarBundle.Create(mat_rebar, Length(float(dia_vert2), LengthUnit.Millimeter), 1)
-            vert_layer2 = ILayerByBarCount.Create(n_vert, vert_bar2)
-            vert_group.Layers.Add(vert_layer2)
+        for k, dia in enumerate(dia_vert):
+            if k == 0 or dia != 0:
+                vert_bar = IBarBundle.Create(mat_rebar, Length(float(dia), LengthUnit.Millimeter), 1)
+                vert_layer = ILayerByBarCount.Create(n_vert, vert_bar)
+                vert_group.Layers.Add(vert_layer)
         section.ReinforcementGroups.Add(vert_group)
 
         self.section[key] = section
@@ -402,18 +219,10 @@ class AdSec:
             if key not in list(self.section.keys()):
                 if section_type == "rcb_pile_1":
                     self = (self._generate_section_rcb_pile_1(*list(df.select(columns).row(i))))
-                elif section_type == "rc_wall_u_1":
-                    self = (self._generate_section_rc_wall_u_1(*list(df.select(columns).row(i))))
-                elif section_type == "rc_wall_u_3":
-                    self = (self._generate_section_rc_wall_u_3(*list(df.select(columns).row(i))))
-                elif section_type == "rc_wall_u_5":
-                    self = (self._generate_section_rc_wall_u_5(*list(df.select(columns).row(i))))
-                elif section_type == "rc_wall_u_6":
-                    self = (self._generate_section_rc_wall_u_6(*list(df.select(columns).row(i))))
-                elif section_type == "rc_column_u_1":
-                    self = (self._generate_section_rc_column_1(*list(df.select(columns).row(i))))
-                elif section_type == "rc_column_u_3":
-                    self = (self._generate_section_rc_column_3(*list(df.select(columns).row(i))))
+                elif section_type.startswith("rc_wall_u_"):
+                    self = (self._generate_section_rc_wall(section_type, *list(df.select(columns).row(i))))
+                elif section_type.startswith("rc_column_u_"):
+                    self = (self._generate_section_rc_column(section_type, *list(df.select(columns).row(i))))
                 else:
                     continue
             

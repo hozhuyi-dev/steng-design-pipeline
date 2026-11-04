@@ -41,3 +41,12 @@ def _drop_outputs(df, outputs):
     selected = [item for item in outputs if item in df.columns]
 
     return df.drop(selected)
+def bar_layers(df, prefix="dia_vert"):
+    """The diameters of every layer of bars present, dia_vert0, dia_vert1, ..., with empty layers as 0 [mm]
+    """
+
+    layers = []
+    while f"{prefix}{len(layers)}" in df.columns:
+        layers.append(df[f"{prefix}{len(layers)}"].fill_null(0).to_numpy())
+
+    return layers

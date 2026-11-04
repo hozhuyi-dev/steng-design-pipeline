@@ -1,9 +1,5 @@
-"""An interface for interacting with CSi software when the API calls are the same
-
-Interfaces:
-CsiApi -- A interface for CSi software
-
-Functions:
+"""CsiApi: the API calls ETABS and SAFE share, through pythonnet: selecting load cases and
+combinations, and exporting tables to parquet or csv
 """
 
 import datetime

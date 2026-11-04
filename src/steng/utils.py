@@ -1,6 +1,4 @@
-"""Functions for utilities in Python
-
-Functions:
+"""Small helpers for files, folders and lists
 """
 
 import difflib

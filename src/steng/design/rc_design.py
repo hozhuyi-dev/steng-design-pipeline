@@ -1,14 +1,12 @@
-"""An interface with methods to design RC elemets
-
-Classes:
-RcDesignMixin -- An interface for designing RC elements
-
-Functions:
+"""RcDesignMixin: designs reinforced concrete columns, walls, coupling beams and piles from a session's forces
 """
+
+from typing import TypeVar
 
 import numpy as np
 import polars as pl
 import scipy as sp
+from numpy.typing import ArrayLike
 from tqdm import tqdm
 
 from steng.design import pm as pm_c
@@ -23,20 +21,43 @@ from steng.utils import check_folder, generate_full_path
 # RC PILE
 PILE_SERVICE_STRESS = 11.5 #MPa
 
+# Most layers of vertical bars in a trial layout
+COLUMN_LAYERS = 3
+WALL_LAYERS = 6
+# AdSec section types, named for their layers of vertical bars
+COLUMN_SECTION = f"rc_column_u_{COLUMN_LAYERS}"
+WALL_SECTION = f"rc_wall_u_{WALL_LAYERS}"
+COLUMN_DIA_VERT = [f"dia_vert{k}" for k in range(COLUMN_LAYERS)]
+WALL_DIA_VERT = [f"dia_vert{k}" for k in range(WALL_LAYERS)]
+WALL_DIA_HORZ = [f"dia_horz{k}" for k in range(WALL_LAYERS + 1)]
+
 # RC WALL
 V2_EFFECTIVE_DEPTH_FACTOR = 0.9
 V3_EFFECTIVE_DEPTH_FACTOR = 1.0
 
+T = TypeVar("T", bound="RcDesignMixin")
+
 class RcDesignMixin(AdSecMixin):
-    def __init__(self):
-        """Initialise instance
-        """
+    """Reinforced concrete design of columns, walls, coupling beams and piles, for a Session
+
+    Each member type has the same steps: create_rc_* sets up the members and forces from the
+    session, design_rc_* checks every trial layout of bars and adds design_rc_* tables of trials
+    and forces, and get_rc_* returns the chosen layout. write_rc_* and read_rc_* save and reload
+    a design.
+    """
+
+    def __init__(self) -> None:
+        """Nothing to set up: the design tables are created by the create_rc_* methods"""
         pass
 
     # ----- rc column -----
 
-    def read_rc_column(self, model, format="parquet"):
-        """read state from folder
+    def read_rc_column(self: T, model: str, format: str = "parquet") -> T:
+        """Read a column design written by write_rc_column, to chart or adjust it without designing again
+
+        Args:
+            model: The folder write_rc_column wrote to.
+            format: "parquet" or "csv".
         """
 
         model = generate_full_path(model)
@@ -61,8 +82,12 @@ class RcDesignMixin(AdSecMixin):
 
         return self
     
-    def write_rc_column(self, model, format="parquet"):
-        """Write the current state to folder
+    def write_rc_column(self: T, model: str, format: str = "parquet") -> T:
+        """Write the column design's inputs and every table of trials and forces to a folder
+
+        Args:
+            model: The folder to write to, created if needed.
+            format: "parquet" or "csv".
         """
 
         model = generate_full_path(model)
@@ -87,8 +112,14 @@ class RcDesignMixin(AdSecMixin):
 
         return self
 
-    def create_rc_column(self):
-        """Create from the children models, geometry to get from the latest model, forces to envelope all children models
+    def create_rc_column(self: T) -> T:
+        """Set up column design: columns from the latest model, forces from every model
+
+        Forces from every child session are kept, so the design envelopes all the revisions. Each
+        column gets design inputs with defaults, to change with update before designing:
+
+        - k2, k3: effective length factors about each axis, 1.0.
+        - p_add, m2_add, m3_add, v2_add, v3_add: forces added to every case [kN, kNm], 0.0.
         """
 
         self.column = (
@@ -112,6 +143,7 @@ class RcDesignMixin(AdSecMixin):
                 station_vert = pl.lit(None).cast(pl.Float64),
                 ur_pmm_vert = pl.lit(None).cast(pl.Float64),
                 ur_adsec_vert = pl.lit(None).cast(pl.Float64),
+                ur_vert = pl.lit(None).cast(pl.Float64),
                 A_s = pl.lit(None).cast(pl.Float64),
                 perc_vert = pl.lit(None).cast(pl.Float64),
                 dia_vert0 = pl.lit(None).cast(pl.Int32),
@@ -153,23 +185,46 @@ class RcDesignMixin(AdSecMixin):
         return self
     
     def design_rc_column(
-            self,
-            contain_column="", not_contain_column="!",
-            contain_story="", not_contain_story="!",
-            contain_outputcase="", not_contain_outputcase="!",
-            ur_limit_pmm=0.9, ur_limit_v=0.9,
-            perc_vert=np.array([1.0, 2.0, 3.0, 4.0]), dia_vert=np.array([10, 12, 16, 20, 25, 32]), s_vert=np.array([150,]),
-            dia_horz=np.array([10, 12, 16]), s_horz=np.array([200,]),
-            n=1,
-        ):
-        """Design rc columns based on the following methodology: 
+            self: T,
+            contain_column: str = "", not_contain_column: str = "!",
+            contain_story: str = "", not_contain_story: str = "!",
+            contain_outputcase: str = "", not_contain_outputcase: str = "!",
+            ur_limit_pmm: float = 0.9, ur_limit_v: float = 0.9,
+            perc_vert: ArrayLike = np.array([1.0, 2.0, 3.0, 4.0]),
+            dia_vert: ArrayLike = np.array([10, 12, 16, 20, 25, 32]),
+            s_vert: ArrayLike = np.array([150,]),
+            dia_horz: ArrayLike = np.array([10, 12, 16]), s_horz: ArrayLike = np.array([200,]),
+            n: int = 1,
+            use_adsec: bool = True,
+        ) -> T:
+        """Design every trial reinforcement layout of the columns against the column forces
 
-        1. Design using the simplified pmm curve + v2 and v3 (Eurocode 2 simplified method)
-        2. Get the governing cases for design and use adsec for pmm design
-        3. Select the most optimise reo
+        1. Lay out trial vertical bars, up to COLUMN_LAYERS layers of n_vert0 bars, for each target ratio.
+        2. Check each trial with the Eurocode 2 simplified method: imperfections and second-order
+           effects by nominal curvature (5.8.8), biaxial bending (5.39), then size the links for
+           shear (6.2).
+        3. If use_adsec, check the n governing forces of each trial against AdSec's failure surface.
+
+        Each trial's governing utilisation goes in design_rc_column_column["ur_vert"]: AdSec's when
+        it ran, otherwise the simplified one. get_rc_column then picks the lightest trial that passes.
+
+        Args:
+            contain_column: Regular expression the column names must match; "" matches all.
+            not_contain_column: Regular expression the column names must not match; "!" excludes none.
+            contain_story, not_contain_story: The same for story names.
+            contain_outputcase, not_contain_outputcase: The same for load cases and combinations.
+            ur_limit_pmm: Utilisation limit for axial force and bending.
+            ur_limit_v: Utilisation limit for shear, which the links are sized to.
+            perc_vert: Target ratios of vertical bars [%]; each gets the closest layout.
+            dia_vert: Vertical bar diameters to try [mm].
+            s_vert: Vertical bar spacings to try [mm].
+            dia_horz, s_horz: Link diameters and spacings to try [mm].
+            n: Forces per trial to check with AdSec, the highest simplified utilisations.
+            use_adsec: Confirm the simplified check with AdSec, which must be installed. Without it,
+                the design stops after the simplified check.
         """
 
-        return (
+        (
             self
             ._design_rc_column_initialise(
                 contain_column, not_contain_column,
@@ -177,22 +232,38 @@ class RcDesignMixin(AdSecMixin):
                 contain_outputcase, not_contain_outputcase,
             )
             ._design_rc_column_populate_vert(perc_vert, dia_vert, s_vert)
-            ._design_rc_column_calculate_pm_column_3()
-            ._design_rc_column_calculate_force_pmm_eccentricity_3()
+            ._design_rc_column_calculate_pm()
+            ._design_rc_column_calculate_force_pmm_eccentricity()
             ._design_rc_column_calculate_ur_pmm_simplified_biaxial()
-            ._design_rc_column_calculate_force_v2_1()
-            ._design_rc_column_calculate_force_v3_1()
-            ._design_rc_column_generate_reo_horz_1(dia_horz, s_horz, ur_limit_v)
-            ._design_rc_column_set_ur_simplified_3()
-            .adsec_calculate_pmm("rc_column_u_3", self.design_rc_column_column)
-            ._design_rc_column_calculate_force_pmm_adsec(n=n)
-            ._design_rc_column_calculate_ur_pmm_adsec()
-            ._design_rc_column_adsec_set_ur()
-            # TODO to set the data back to column so that this can be exported to other software
+            ._design_rc_column_calculate_force_v2()
+            ._design_rc_column_calculate_force_v3()
+            ._design_rc_column_generate_reo_horz(dia_horz, s_horz, ur_limit_v)
+            ._design_rc_column_set_ur_simplified()
         )
+
+        if use_adsec:
+            (
+                self
+                .adsec_calculate_pmm(COLUMN_SECTION, self.design_rc_column_column)
+                ._design_rc_column_calculate_force_pmm_adsec(n=n)
+                ._design_rc_column_calculate_ur_pmm_adsec()
+                ._design_rc_column_adsec_set_ur()
+            )
+
+        return self
     
-    def get_rc_column(self, ur_limit, group_column=pl.col("column"), group_story=pl.col("elev")):
-        """Return the column table based on a single ur column
+    def get_rc_column(
+            self, ur_limit: float, group_column: pl.Expr = pl.col("column"), group_story: pl.Expr = pl.col("elev"),
+        ) -> pl.DataFrame:
+        """Return the chosen reinforcement: for each column and story, the lightest trial that passes
+
+        Where no trial passes, the strongest is returned, with its utilisation over the limit. Columns
+        and stories can be grouped for the drawings, each group taking its heaviest member's layout.
+
+        Args:
+            ur_limit: The utilisation limit, on ur_vert.
+            group_column: Expression giving each column's group, by default each column on its own.
+            group_story: Expression giving each story's group, by default each story on its own.
         """
 
         df_max = (
@@ -200,9 +271,9 @@ class RcDesignMixin(AdSecMixin):
             .select(
                 "story", "column", "elev", "grade", "t2", "t3",
                 "model_vert", "outputcase_vert", "station_vert",
-                "ur_pmm_vert", "ur_adsec_vert",
+                "ur_pmm_vert", "ur_adsec_vert", "ur_vert",
                 "key", "reo_vert", "dia_vert", "perc_vert", "A_s", 
-                "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "n2_horz0", "n3_horz0",
+                "n_vert0", *COLUMN_DIA_VERT, "n2_horz0", "n3_horz0",
                 "model_horz2", "outputcase_horz2", "station_horz2",
                 "ur_vc_horz2", "ur_vmax_horz2", "ur_horz2", 
                 "A_sw_s2", 
@@ -212,7 +283,7 @@ class RcDesignMixin(AdSecMixin):
                 "s_horz0", "dia_horz0", 
             )
             .group_by("story", "column")
-            .agg(pl.all().sort_by("ur_adsec_vert").first())
+            .agg(pl.all().sort_by("ur_vert").first())
         )
 
         df_design = (
@@ -220,9 +291,9 @@ class RcDesignMixin(AdSecMixin):
             .select(
                 "story", "column", "elev", "grade", "t2", "t3",
                 "model_vert", "outputcase_vert", "station_vert",
-                "ur_pmm_vert", "ur_adsec_vert",
+                "ur_pmm_vert", "ur_adsec_vert", "ur_vert",
                 "key", "reo_vert", "dia_vert", "perc_vert", "A_s", 
-                "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "n2_horz0", "n3_horz0",
+                "n_vert0", *COLUMN_DIA_VERT, "n2_horz0", "n3_horz0",
                 "model_horz2", "outputcase_horz2", "station_horz2",
                 "ur_vc_horz2", "ur_vmax_horz2", "ur_horz2", 
                 "A_sw_s2", 
@@ -231,7 +302,7 @@ class RcDesignMixin(AdSecMixin):
                 "A_sw_s3", 
                 "s_horz0", "dia_horz0", 
             )
-            .filter(pl.col("ur_adsec_vert") <= ur_limit)
+            .filter(pl.col("ur_vert") <= ur_limit)
             .group_by("story", "column")
             .agg(
                 pl.all().sort_by("A_s").first(),
@@ -259,9 +330,9 @@ class RcDesignMixin(AdSecMixin):
                 pl.col("elev").first(),
                 pl.col(
                     "model_vert", "outputcase_vert", "station_vert",
-                    "ur_pmm_vert", "ur_adsec_vert",
+                    "ur_pmm_vert", "ur_adsec_vert", "ur_vert",
                     "key", "reo_vert", "dia_vert", "perc_vert", "A_s", 
-                    "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "n2_horz0", "n3_horz0",
+                    "n_vert0", *COLUMN_DIA_VERT, "n2_horz0", "n3_horz0",
                 ).sort_by("A_s").last(),
                 pl.col(
                     "model_horz2", "outputcase_horz2", "station_horz2",
@@ -298,9 +369,9 @@ class RcDesignMixin(AdSecMixin):
                 pl.col("grade_min").min(),
                 pl.col(
                     "model_vert", "outputcase_vert", "station_vert",
-                    "ur_pmm_vert", "ur_adsec_vert",
+                    "ur_pmm_vert", "ur_adsec_vert", "ur_vert",
                     "key", "reo_vert", "dia_vert", "perc_vert", "A_s", 
-                    "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "n2_horz0", "n3_horz0",
+                    "n_vert0", *COLUMN_DIA_VERT, "n2_horz0", "n3_horz0",
                 ).sort_by("A_s").last(),
                 pl.col(
                     "model_horz2", "outputcase_horz2", "station_horz2",
@@ -344,8 +415,9 @@ class RcDesignMixin(AdSecMixin):
             .with_columns(
                 x = pl.col("xs").list.first(),
                 y = pl.col("ys").list.first(),
-                t2 = pl.col("section_line").str.extract(r"(\d+(?:\.\d+)?)", 1).cast(pl.Float64),
-                t3 = pl.col("section_line").str.extract_all(r"(\d+(?:\.\d+)?)").list.get(1).cast(pl.Float64),
+                # "R(m) <t3> <t2>": ETABS gives the depth t3, along local axis 2, first
+                t3 = pl.col("section_line").str.extract(r"(\d+(?:\.\d+)?)", 1).cast(pl.Float64),
+                t2 = pl.col("section_line").str.extract_all(r"(\d+(?:\.\d+)?)").list.get(1).cast(pl.Float64),
             )
         )
 
@@ -475,16 +547,16 @@ class RcDesignMixin(AdSecMixin):
         """Generate vertical reo
         """
 
-        self.design_rc_column_column = sec_c.populate_reo_column_vert_3(self.design_rc_column_column, perc_vert, dia_vert, s_vert, cover=cover, dia_horz=dia_horz)
+        self.design_rc_column_column = sec_c.populate_reo_column_vert(self.design_rc_column_column, perc_vert, dia_vert, s_vert, n_layers=COLUMN_LAYERS, cover=cover, dia_horz=dia_horz)
 
         self.design_rc_column_column = (
             self.design_rc_column_column
             .with_columns(
-                pl.Series("key", generate_keys("rc_column_u_3", self.design_rc_column_column.select(get_columns("rc_column_u_3"))), dtype=pl.String)
+                pl.Series("key", generate_keys(COLUMN_SECTION, self.design_rc_column_column.select(get_columns(COLUMN_SECTION))), dtype=pl.String)
             )
         )
 
-        self.design_rc_column_column = generate_reo_vert(self.design_rc_column_column, "rc_column_u_3")
+        self.design_rc_column_column = generate_reo_vert(self.design_rc_column_column, COLUMN_SECTION)
 
         self.design_rc_column_force_v2 = (
             self.design_rc_column_force_v2
@@ -498,11 +570,11 @@ class RcDesignMixin(AdSecMixin):
 
         return self
     
-    def _design_rc_column_calculate_pm_column_3(self):
+    def _design_rc_column_calculate_pm(self):
         """Calculate the pmm simplified curve
         """
 
-        self.design_rc_column_column = pm_c.calculate_pm_column_3(self.design_rc_column_column)
+        self.design_rc_column_column = pm_c.calculate_pm_column(self.design_rc_column_column, n_layers=COLUMN_LAYERS)
 
         self.design_rc_column_force_pmm = (
             self.design_rc_column_force_pmm
@@ -511,7 +583,7 @@ class RcDesignMixin(AdSecMixin):
 
         return self
     
-    def _design_rc_column_calculate_force_pmm_eccentricity_3(self):
+    def _design_rc_column_calculate_force_pmm_eccentricity(self):
         """Calculate the pmm check with the Eurocode 2 simplified method
         """
 
@@ -521,13 +593,13 @@ class RcDesignMixin(AdSecMixin):
         self.design_rc_column_force_pmm = rc_c.calculate_material(self.design_rc_column_force_pmm)
         pbar.update(1)
         self.design_rc_column_force_pmm = rc_c.calculate_effective_length_column(self.design_rc_column_force_pmm)
-        self.design_rc_column_force_pmm = rc_c.calculate_effective_depth_3(self.design_rc_column_force_pmm)
+        self.design_rc_column_force_pmm = rc_c.calculate_effective_depth_column(self.design_rc_column_force_pmm)
         pbar.update(1)
         self.design_rc_column_force_pmm = rc_c.calculate_eccentricity_0_i(self.design_rc_column_force_pmm)
         pbar.update(1)
         self.design_rc_column_force_pmm = rc_c.calculate_creep(self.design_rc_column_force_pmm)
         pbar.update(1)
-        self.design_rc_column_force_pmm = rc_c.calculate_slenderness_3(self.design_rc_column_force_pmm)
+        self.design_rc_column_force_pmm = rc_c.calculate_slenderness(self.design_rc_column_force_pmm, section="column")
         pbar.update(1)
         self.design_rc_column_force_pmm = rc_c.calculate_eccentricity_2(self.design_rc_column_force_pmm)
         pbar.update(1)
@@ -544,13 +616,13 @@ class RcDesignMixin(AdSecMixin):
         pbar = tqdm(total=2, desc="Calculating ur pmm simplified biaxial")
         self.design_rc_column_force_pmm = rc_c.calculate_moment_capacity_simplified_biaxial(self.design_rc_column_force_pmm)
         pbar.update(1)
-        self.design_rc_column_force_pmm = rc_c.calculate_ur_biaxial(self.design_rc_column_force_pmm)
+        self.design_rc_column_force_pmm = rc_c.calculate_ur_biaxial_eccentricity(self.design_rc_column_force_pmm)
         pbar.update(1)
         pbar.close()
 
         return self
     
-    def _design_rc_column_calculate_force_v2_1(self):
+    def _design_rc_column_calculate_force_v2(self):
         """Calculate the v2 shear check with the Eurocode 2 simplified method
         """
 
@@ -559,7 +631,7 @@ class RcDesignMixin(AdSecMixin):
         pbar.update(1)
         self.design_rc_column_force_v2 = rc_c.calculate_material(self.design_rc_column_force_v2)
         pbar.update(1)
-        self.design_rc_column_force_v2 = rc_c.calculate_capacity_shear_concrete_3(self.design_rc_column_force_v2)
+        self.design_rc_column_force_v2 = rc_c.calculate_capacity_shear_concrete(self.design_rc_column_force_v2)
         pbar.update(1)
         self.design_rc_column_force_v2 = rc_c.calculate_capacity_shear_max(self.design_rc_column_force_v2)
         pbar.update(1)
@@ -569,7 +641,7 @@ class RcDesignMixin(AdSecMixin):
 
         return self
     
-    def _design_rc_column_calculate_force_v3_1(self):
+    def _design_rc_column_calculate_force_v3(self):
         """Calculate the v3 shear check with the Eurocode 2 simplified method
         """
 
@@ -578,7 +650,7 @@ class RcDesignMixin(AdSecMixin):
         pbar.update(1)
         self.design_rc_column_force_v3 = rc_c.calculate_material(self.design_rc_column_force_v3)
         pbar.update(1)
-        self.design_rc_column_force_v3 = rc_c.calculate_capacity_shear_concrete_3(self.design_rc_column_force_v3)
+        self.design_rc_column_force_v3 = rc_c.calculate_capacity_shear_concrete(self.design_rc_column_force_v3)
         pbar.update(1)
         self.design_rc_column_force_v3 = rc_c.calculate_capacity_shear_max(self.design_rc_column_force_v3)
         pbar.update(1)
@@ -588,33 +660,38 @@ class RcDesignMixin(AdSecMixin):
 
         return self
     
-    def _design_rc_column_generate_reo_horz_1(self, diameter, spacing, ur_limit):
+    def _design_rc_column_generate_reo_horz(self, diameter, spacing, ur_limit):
         """Generate horz reo
         """
 
-        self.design_rc_column_force_v2 = sec_c.generate_reo_column_horz_1(self.design_rc_column_force_v2, "A_sw_s_req2", "2", diameter, spacing, ur_limit)
-        self.design_rc_column_force_v3 = sec_c.generate_reo_column_horz_1(self.design_rc_column_force_v3, "A_sw_s_req3", "3", diameter, spacing, ur_limit)
+        self.design_rc_column_force_v2 = sec_c.generate_reo_column_horz(self.design_rc_column_force_v2, "A_sw_s_req2", "2", diameter, spacing, ur_limit)
+        self.design_rc_column_force_v3 = sec_c.generate_reo_column_horz(self.design_rc_column_force_v3, "A_sw_s_req3", "3", diameter, spacing, ur_limit)
 
         return self
     
-    def _design_rc_column_set_ur_simplified_3(self):
+    def _design_rc_column_set_ur_simplified(self):
         """Update the pier table with the utilisation ratios"""
 
         df_force_pmm = (
             self.design_rc_column_force_pmm
             .select(
-                "column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "s_vert0",
-                "ur_m2", "ur_m3", "ur_biaxial"
+                "column", "story", "n_vert0", *COLUMN_DIA_VERT, "s_vert0",
+                "model", "outputcase", "station",
+                pl.max_horizontal("ur_m2", "ur_m3", "ur_biaxial").alias("ur_pmm_vert"),
             )
-            .group_by("column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "s_vert0")
-            .agg(pl.all().max())
-            .with_columns(ur_pmm_vert = pl.max_horizontal("ur_m2", "ur_m3", "ur_biaxial"))
+            .rename({
+                "model": "model_vert",
+                "outputcase": "outputcase_vert",
+                "station": "station_vert",
+            })
+            .group_by("column", "story", "n_vert0", *COLUMN_DIA_VERT, "s_vert0")
+            .agg(pl.all().sort_by("ur_pmm_vert").last())
         )
 
         df_force_v2 = (
             self.design_rc_column_force_v2
             .select(
-                "column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "s_vert0",
+                "column", "story", "n_vert0", *COLUMN_DIA_VERT, "s_vert0",
                 "model", "outputcase", "station",
                 "ur_vc", "ur_vmax", "ur_horz2",
                 "A_sw_s_prov2", "s_horz02", "dia_horz02"
@@ -626,7 +703,7 @@ class RcDesignMixin(AdSecMixin):
                 "ur_vc": "ur_vc_horz2",
                 "ur_vmax": "ur_vmax_horz2",
             })
-            .group_by("column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "s_vert0")
+            .group_by("column", "story", "n_vert0", *COLUMN_DIA_VERT, "s_vert0")
             .agg(
                 pl.col("ur_vc_horz2", "ur_vmax_horz2").max(),
                 pl.all().exclude("ur_vc_horz2", "ur_vmax_horz2").sort_by("A_sw_s_prov2").last()
@@ -636,7 +713,7 @@ class RcDesignMixin(AdSecMixin):
         df_force_v = (
             self.design_rc_column_force_v3
             .select(
-                "column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "s_vert0",
+                "column", "story", "n_vert0", *COLUMN_DIA_VERT, "s_vert0",
                 "model", "outputcase", "station",
                 "ur_vc", "ur_vmax", "ur_horz3",
                 "A_sw_s_prov3", "s_horz03", "dia_horz03"
@@ -648,12 +725,12 @@ class RcDesignMixin(AdSecMixin):
                 "ur_vc": "ur_vc_horz3",
                 "ur_vmax": "ur_vmax_horz3",
             })
-            .group_by("column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "s_vert0")
+            .group_by("column", "story", "n_vert0", *COLUMN_DIA_VERT, "s_vert0")
             .agg(
                 pl.col("ur_vc_horz3", "ur_vmax_horz3").max(),
                 pl.all().exclude("ur_vc_horz3", "ur_vmax_horz3").sort_by("A_sw_s_prov3").last()
             )
-            .join(df_force_v2, on=["column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "s_vert0"], how="left")
+            .join(df_force_v2, on=["column", "story", "n_vert0", *COLUMN_DIA_VERT, "s_vert0"], how="left")
             .with_columns(
                 dia_horz0 = (
                     pl.when((pl.col("dia_horz03").pow(2) / pl.col("s_horz03")) > (pl.col("dia_horz02").pow(2) / pl.col("s_horz02")))
@@ -681,38 +758,39 @@ class RcDesignMixin(AdSecMixin):
 
         self.design_rc_column_column = (
             self.design_rc_column_column
-            .update(df_force_pmm, on=["column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2"], how="left")
-            .update(df_force_v, on=["column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2"], how="left")
+            .update(df_force_pmm, on=["column", "story", "n_vert0", *COLUMN_DIA_VERT], how="left")
+            .update(df_force_v, on=["column", "story", "n_vert0", *COLUMN_DIA_VERT], how="left")
+            .with_columns(ur_vert = pl.col("ur_pmm_vert"))
         )
 
         self.design_rc_column_column = (
             self.design_rc_column_column
             .with_columns(
-                pl.Series("key", generate_keys("rc_column_u_3", self.design_rc_column_column.select(get_columns("rc_column_u_3"))), dtype=pl.String)
+                pl.Series("key", generate_keys(COLUMN_SECTION, self.design_rc_column_column.select(get_columns(COLUMN_SECTION))), dtype=pl.String)
             )
         )
 
         self.design_rc_column_force_pmm = (
             self.design_rc_column_force_pmm
             .update(
-                self.design_rc_column_column.select("column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "key"),
-                on=["column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2"], how="left"
+                self.design_rc_column_column.select("column", "story", "n_vert0", *COLUMN_DIA_VERT, "key"),
+                on=["column", "story", "n_vert0", *COLUMN_DIA_VERT], how="left"
             )
         )
 
         self.design_rc_column_force_v2 = (
             self.design_rc_column_force_v2
             .update(
-                self.design_rc_column_column.select("column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "key"),
-                on=["column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2"], how="left"
+                self.design_rc_column_column.select("column", "story", "n_vert0", *COLUMN_DIA_VERT, "key"),
+                on=["column", "story", "n_vert0", *COLUMN_DIA_VERT], how="left"
             )
         )
 
         self.design_rc_column_force_v3 = (
             self.design_rc_column_force_v3
             .update(
-                self.design_rc_column_column.select("column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "key"),
-                on=["column", "story", "n_vert0", "dia_vert0", "dia_vert1", "dia_vert2"], how="left"
+                self.design_rc_column_column.select("column", "story", "n_vert0", *COLUMN_DIA_VERT, "key"),
+                on=["column", "story", "n_vert0", *COLUMN_DIA_VERT], how="left"
             )
         )
 
@@ -779,14 +857,19 @@ class RcDesignMixin(AdSecMixin):
         self.design_rc_column_column = (
             self.design_rc_column_column
             .update(df_force, on=["column", "story", "key"], how="left")
+            .with_columns(ur_vert = pl.col("ur_adsec_vert"))
         )
 
         return self
 
     # ----- rc coupling beam -----
 
-    def read_rc_coupling_beam(self, model, format="parquet"):
-        """read state from folder
+    def read_rc_coupling_beam(self: T, model: str, format: str = "parquet") -> T:
+        """Read a coupling beam design written by write_rc_coupling_beam, to chart or adjust it without designing again
+
+        Args:
+            model: The folder write_rc_coupling_beam wrote to.
+            format: "parquet" or "csv".
         """
 
         model = generate_full_path(model)
@@ -804,8 +887,12 @@ class RcDesignMixin(AdSecMixin):
             self.design_rc_coupling_beam_force = pl.read_csv(model + "design_rc_coupling_beam_force." + format)
         return self
     
-    def write_rc_coupling_beam(self, model, format="parquet"):
-        """Write the current state to folder
+    def write_rc_coupling_beam(self: T, model: str, format: str = "parquet") -> T:
+        """Write the coupling beam design's inputs and every table of trials and forces to a folder
+
+        Args:
+            model: The folder to write to, created if needed.
+            format: "parquet" or "csv".
         """
 
         model = generate_full_path(model)
@@ -824,8 +911,10 @@ class RcDesignMixin(AdSecMixin):
 
         return self
     
-    def create_rc_coupling_beam(self):
-        """Create from the children models, geometry to get from the latest model, forces to envelope all children models
+    def create_rc_coupling_beam(self: T) -> T:
+        """Set up coupling beam design: walls from the latest model, spandrel forces from every model
+
+        Each wall gets forces added to every case, p_add, m3_add and v2_add [kN, kNm], 0.0 by default.
         """
 
         self.wall = (
@@ -881,20 +970,33 @@ class RcDesignMixin(AdSecMixin):
         return self
     
     def design_rc_coupling_beam(
-            self,
-            contain_spandrel="", not_contain_spandrel="!",
-            contain_story="", not_contain_story="!",
-            contain_outputcase="", not_contain_outputcase="!",
-            ur_limit=0.9,  reduce_depth=0,
-            diameter_flexure=np.array([10, 12, 16, 20, 25, 32]),
-            diameter_shear=np.array([10, 12, 16, 20, 25, 32]),
-            spacing_shear=np.array([100, 150, 200, 250, 300]),
-            n=1,
-        ):
-        """Design rc coupling beams based on the following methodology: 
+            self: T,
+            contain_spandrel: str = "", not_contain_spandrel: str = "!",
+            contain_story: str = "", not_contain_story: str = "!",
+            contain_outputcase: str = "", not_contain_outputcase: str = "!",
+            ur_limit: float = 0.9, reduce_depth: float = 0,
+            diameter_flexure: ArrayLike = np.array([10, 12, 16, 20, 25, 32]),
+            diameter_shear: ArrayLike = np.array([10, 12, 16, 20, 25, 32]),
+            spacing_shear: ArrayLike = np.array([100, 150, 200, 250, 300]),
+            n: int = 1,
+        ) -> T:
+        """Design the top and bottom bars and the links of coupling beams from the spandrel forces
 
-        TODO
-        1. 
+        The section is each spandrel's depth and thickness from the latest model's spandrel section
+        properties. Each pass sizes the flexural bars for the moment, as a singly or doubly reinforced
+        beam (6.1), then the links for shear (6.2). Passes repeat, up to n, until the bars stop changing
+        the effective depth. design_rc_coupling_beam_spandrel holds each spandrel's layout.
+
+        Args:
+            contain_spandrel: Regular expression the spandrel names must match; "" matches all.
+            not_contain_spandrel: Regular expression the spandrel names must not match; "!" excludes none.
+            contain_story, not_contain_story: The same for story names.
+            contain_outputcase, not_contain_outputcase: The same for load cases and combinations.
+            ur_limit: Utilisation limit the bars are sized to.
+            reduce_depth: Depth to take off each spandrel, for a slab recess or set-down [mm].
+            diameter_flexure: Top and bottom bar diameters to try [mm].
+            diameter_shear, spacing_shear: Link diameters and spacings to try [mm].
+            n: Most passes between flexure and shear.
         """
 
         return (
@@ -1242,8 +1344,11 @@ class RcDesignMixin(AdSecMixin):
 
     # ----- rc pile -----
 
-    def create_rc_pile(self):
-        """Create from the children models, geometry to get from the latest model, forces to envelope all children models
+    def create_rc_pile(self: T) -> T:
+        """Set up pile design: piles from the latest model's spring points, reactions from every model
+
+        A pile is a point with a spring section named "<name> <diameter m> <grade>", for example
+        "P 1.0 40", which gives dia [mm] and grade.
         """
 
         self.point = (
@@ -1285,19 +1390,37 @@ class RcDesignMixin(AdSecMixin):
         return self
     
     def design_rc_pile(
-            self,
-            contain_geo="", not_contain_geo="!",
-            contain_str="", not_contain_str="!",
-            ur_limit_pm=0.9, ur_limit_v=0.9,
-            perc_vert=[1.0, 2.0, 3.0, 4.0], dia_vert=[10, 12, 16, 20, 25, 32], s_vert=[150,],
-            fxy_scale=75.0/1500,
-            df_capacity_geo=None, df_mxy_scale=None
-        ):
-        """Design RC piles based on the following methodology:
+            self: T,
+            contain_geo: str = "", not_contain_geo: str = "!",
+            contain_str: str = "", not_contain_str: str = "!",
+            ur_limit_pm: float = 0.9, ur_limit_v: float = 0.9,
+            perc_vert: ArrayLike = [1.0, 2.0, 3.0, 4.0], dia_vert: ArrayLike = [10, 12, 16, 20, 25, 32],
+            s_vert: ArrayLike = [150,],
+            fxy_scale: float = 75.0/1500,
+            df_capacity_geo: pl.DataFrame | None = None, df_mxy_scale: pl.DataFrame | None = None,
+        ) -> T:
+        """Check piles against their geotechnical capacity, and design their bars against AdSec's
+        force-moment curves, which needs AdSec installed
 
-        1. Check geo combination against pile geo capacity
-        2. Check PM against PM curve from Adsec
-        3. Check V for spiral links
+        1. Check the reactions of the geotechnical cases against each pile's compression and tension
+           capacity.
+        2. Check the reactions of the structural cases against the force-moment curve of each trial
+           layout of bars, with the pile head moment from the lateral force.
+
+        Args:
+            contain_geo, not_contain_geo: Regular expressions the geotechnical (service) cases must and
+                must not match.
+            contain_str, not_contain_str: The same for the structural (ultimate) cases.
+            ur_limit_pm: Utilisation limit for axial force and bending.
+            ur_limit_v: Utilisation limit for shear.
+            perc_vert, dia_vert, s_vert: Target ratios of vertical bars [%], and diameters and spacings
+                to try [mm].
+            fxy_scale: Lateral force added to each reaction, as a fraction of the axial force, for
+                construction tolerances.
+            df_capacity_geo: dia, compression_capacity_geo, tension_capacity_geo [mm, kN]. By default
+                11.5 MPa on the pile's area in compression, and half that in tension.
+            df_mxy_scale: dia, fxy, mxy [mm, kN, kNm]: the pile head moment for a lateral force, from a
+                lateral pile analysis, interpolated linearly.
         """
 
         if df_mxy_scale is None:
@@ -1342,8 +1465,8 @@ class RcDesignMixin(AdSecMixin):
             # TODO Check shear for spiral links
         )
     
-    def get_rc_pile_fz_max(self, contain_outputcase, not_contain_outputcase="!"):
-        """Return a df of fz
+    def get_rc_pile_fz_max(self, contain_outputcase: str, not_contain_outputcase: str = "!") -> pl.DataFrame:
+        """Return each pile's largest compression reaction over the matching cases, with its coordinates
         """
 
         return (
@@ -1357,8 +1480,9 @@ class RcDesignMixin(AdSecMixin):
             .join(self.point.select("unique_point", "x", "y", "z"), on="unique_point", how="left")
         )
     
-    def get_rc_pile_fz_min(self, contain_outputcase, not_contain_outputcase="!"):
-        """Return a df of fz
+    def get_rc_pile_fz_min(self, contain_outputcase: str, not_contain_outputcase: str = "!") -> pl.DataFrame:
+        """Return each pile's largest tension reaction over the matching cases, 0 where none is in
+        tension, with its coordinates
         """
 
         return (
@@ -1373,8 +1497,8 @@ class RcDesignMixin(AdSecMixin):
             .join(self.point.select("unique_point", "x", "y", "z"), on="unique_point", how="left")
         )
     
-    def get_rc_pile_uz_min(self, contain_outputcase, not_contain_outputcase="!"):
-        """Return a df of uz min
+    def get_rc_pile_uz_min(self, contain_outputcase: str, not_contain_outputcase: str = "!") -> pl.DataFrame:
+        """Return each pile's largest settlement over the matching cases, with its coordinates
         """
 
         return (
@@ -1637,8 +1761,12 @@ class RcDesignMixin(AdSecMixin):
 
     # ----- rc wall -----
 
-    def read_rc_wall(self, model, format="parquet"):
-        """read state from folder
+    def read_rc_wall(self: T, model: str, format: str = "parquet") -> T:
+        """Read a wall design written by write_rc_wall, to chart or adjust it without designing again
+
+        Args:
+            model: The folder write_rc_wall wrote to.
+            format: "parquet" or "csv".
         """
 
         model = generate_full_path(model)
@@ -1663,8 +1791,12 @@ class RcDesignMixin(AdSecMixin):
 
         return self
     
-    def write_rc_wall(self, model, format="parquet"):
-        """Write the current state to folder
+    def write_rc_wall(self: T, model: str, format: str = "parquet") -> T:
+        """Write the wall design's inputs and every table of trials and forces to a folder
+
+        Args:
+            model: The folder to write to, created if needed.
+            format: "parquet" or "csv".
         """
 
         model = generate_full_path(model)
@@ -1689,8 +1821,16 @@ class RcDesignMixin(AdSecMixin):
 
         return self
 
-    def create_rc_wall(self):
-        """Create from the children models, geometry to get from the latest model, forces to envelope all children models
+    def create_rc_wall(self: T) -> T:
+        """Set up wall design: walls from the latest model, pier forces from every model
+
+        Forces from every child session are kept, so the design envelopes all the revisions. Each
+        wall gets design inputs with defaults, to change with update before designing:
+
+        - k2, k3: effective length factors in and out of plane, 1.0.
+        - n_side_restrained: edges held laterally, for the out-of-plane effective length (Table 12.1), 2.
+        - p_add_m, m2_add_m, m3_add_m, v2_add_m, v3_add_m: forces added to every case, per m of wall
+          [kN/m, kNm/m], 0.0.
         """
 
         self.wall = (
@@ -1715,6 +1855,7 @@ class RcDesignMixin(AdSecMixin):
                 station_vert = pl.lit(None).cast(pl.Float64),
                 ur_pmm_vert = pl.lit(None).cast(pl.Float64),
                 ur_adsec_vert = pl.lit(None).cast(pl.Float64),
+                ur_vert = pl.lit(None).cast(pl.Float64),
                 A_s = pl.lit(None).cast(pl.Float64),
                 perc_vert = pl.lit(None).cast(pl.Float64),
                 dia_vert0 = pl.lit(None).cast(pl.Int32),
@@ -1771,24 +1912,49 @@ class RcDesignMixin(AdSecMixin):
         return self
     
     def design_rc_wall(
-            self,
-            contain_pier="", not_contain_pier="!",
-            contain_story="", not_contain_story="!",
-            contain_outputcase="", not_contain_outputcase="!",
-            ur_limit_pmm=0.9, ur_limit_v=0.9,
-            perc_vert=np.array([1.0, 2.0, 3.0, 4.0]), dia_vert=np.array([10, 12, 16, 20, 25, 32]), s_vert=np.array([200,]),
-            dia_horz=np.array([10, 12, 16, 20, 25]), s_horz=np.array([200,]),
-            dia_tie=np.array([10, 12, 16]),
-            n=1,
-        ):
-        """Design rc walls based on the following methodology: 
+            self: T,
+            contain_pier: str = "", not_contain_pier: str = "!",
+            contain_story: str = "", not_contain_story: str = "!",
+            contain_outputcase: str = "", not_contain_outputcase: str = "!",
+            ur_limit_pmm: float = 0.9, ur_limit_v: float = 0.9,
+            perc_vert: ArrayLike = np.array([1.0, 2.0, 3.0, 4.0]),
+            dia_vert: ArrayLike = np.array([10, 12, 16, 20, 25, 32]),
+            s_vert: ArrayLike = np.array([200,]),
+            dia_horz: ArrayLike = np.array([10, 12, 16, 20, 25]), s_horz: ArrayLike = np.array([200,]),
+            dia_tie: ArrayLike = np.array([10, 12, 16]),
+            n: int = 1,
+            use_adsec: bool = True,
+        ) -> T:
+        """Design every trial reinforcement layout of the wall piers against the pier forces
 
-        1. Design using the simplified pmm curve + v2 and v3 (Eurocode 2 simplified method)
-        2. Get the governing cases for design and use adsec for pmm design
-        3. Select the most optimise reo
+        1. Lay out trial vertical bars, up to WALL_LAYERS layers on each face, for each target ratio.
+        2. Check each trial with the Eurocode 2 simplified method: imperfections and second-order
+           effects by nominal curvature (5.8.8), biaxial bending (5.39), then size the horizontal
+           bars and ties for shear (6.2).
+        3. If use_adsec, check the n governing forces of each trial against AdSec's failure surface.
+
+        Each trial's governing utilisation goes in design_rc_wall_pier["ur_vert"]: AdSec's when it
+        ran, otherwise the simplified one. get_rc_wall then picks the lightest trial that passes.
+
+        Args:
+            contain_pier: Regular expression the pier names must match; "" matches all.
+            not_contain_pier: Regular expression the pier names must not match; "!" excludes none.
+            contain_story, not_contain_story: The same for story names.
+            contain_outputcase, not_contain_outputcase: The same for load cases and combinations.
+            ur_limit_pmm: Utilisation limit for axial force and bending.
+            ur_limit_v: Utilisation limit for shear, which the horizontal bars and ties are sized to.
+            perc_vert: Target ratios of vertical bars [%]; each gets the closest layout of up to
+                WALL_LAYERS layers on each face.
+            dia_vert: Vertical bar diameters to try [mm].
+            s_vert: Vertical bar spacings to try [mm].
+            dia_horz, s_horz: Horizontal bar diameters and spacings to try [mm].
+            dia_tie: Tie diameters to try [mm], at s_horz and s_vert.
+            n: Forces per trial to check with AdSec, the highest simplified utilisations.
+            use_adsec: Confirm the simplified check with AdSec, which must be installed. Without it,
+                the design stops after the simplified check.
         """
 
-        return (
+        (
             self
             ._design_rc_wall_initialise(
                 contain_pier, not_contain_pier,
@@ -1796,58 +1962,75 @@ class RcDesignMixin(AdSecMixin):
                 contain_outputcase, not_contain_outputcase,
             )
             ._design_rc_wall_populate_vert(perc_vert, dia_vert, s_vert)
-            ._design_rc_wall_calculate_pm_wall_6()
+            ._design_rc_wall_calculate_pm()
             ._design_rc_wall_calculate_force_pmm_eccentricity()
             ._design_rc_wall_calculate_ur_pmm_eccentricity_simplified_biaxial()
             ._design_rc_wall_calculate_force_v2()
-            ._design_rc_wall_generate_reo_horz_6(dia_horz, s_horz, ur_limit_v)
+            ._design_rc_wall_generate_reo_horz(dia_horz, s_horz, ur_limit_v)
             ._design_rc_wall_calculate_force_v3(ur_limit_v)
-            ._design_rc_wall_generate_reo_tie_1(dia_tie, s_vert, s_horz, ur_limit_v)
+            ._design_rc_wall_generate_reo_tie(dia_tie, s_vert, s_horz, ur_limit_v)
             ._design_rc_wall_set_ur_simplified()
-            .adsec_calculate_pmm("rc_wall_u_6", self.design_rc_wall_pier)
-            ._design_rc_wall_calculate_force_pmm_adsec(n=n)
-            ._design_rc_wall_calculate_adsec_ur_pmm()
-            ._design_rc_wall_adsec_set_ur()
-            # TODO to set the data back to wall so that this can be exported to other software
         )
+
+        if use_adsec:
+            (
+                self
+                .adsec_calculate_pmm(WALL_SECTION, self.design_rc_wall_pier)
+                ._design_rc_wall_calculate_force_pmm_adsec(n=n)
+                ._design_rc_wall_calculate_adsec_ur_pmm()
+                ._design_rc_wall_adsec_set_ur()
+            )
+
+        return self
     
-    def get_rc_wall(self, ur_limit, group_pier=pl.col("pier"), group_story=pl.col("elev")):
-        """Return the pier table based on a single ur column
+    def get_rc_wall(
+            self, ur_limit: float, group_pier: pl.Expr = pl.col("pier"), group_story: pl.Expr = pl.col("elev"),
+        ) -> pl.DataFrame:
+        """Return the chosen reinforcement: for each pier and story, the lightest trial that passes
+
+        Where no trial passes, the strongest is returned, with its utilisation over the limit. Piers
+        and stories can be grouped for the drawings, each group taking its heaviest member's layout:
+        vertical bars, horizontal bars and ties chosen separately.
+
+        Args:
+            ur_limit: The utilisation limit, on ur_vert.
+            group_pier: Expression giving each pier's group, by default each pier on its own.
+            group_story: Expression giving each story's group, by default each story on its own.
         """
 
         df_pier_max = (
             self.design_rc_wall_pier
             .select(
-                "story", "pier", "elev", "thickness_min", "grade_min",
+                "story", "pier", "elev", "length", "thickness_min", "grade_min",
                 "model_vert", "outputcase_vert", "station_vert",
-                "ur_pmm_vert", "ur_adsec_vert",
-                "key", "reo_vert", "dia_vert", "perc_vert", "A_s", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",
+                "ur_pmm_vert", "ur_adsec_vert", "ur_vert",
+                "key", "reo_vert", "dia_vert", "perc_vert", "A_s", "s_vert0", *WALL_DIA_VERT,
                 "model_horz", "outputcase_horz", "station_horz",
                 "ur_vc_horz", "ur_vmax_horz", "ur_horz", 
-                "A_sw_s2", "s_horz", "dia_horz0", "dia_horz1", "dia_horz2", "dia_horz3", "dia_horz4", "dia_horz5", "dia_horz6",
+                "A_sw_s2", "s_horz", *WALL_DIA_HORZ,
                 "model_tie", "outputcase_tie", "station_tie",
                 "ur_vc_tie", "ur_vmax_tie", "ur_tie", 
                 "A_sw_s3", "sh_tie", "sv_tie", "dia_tie",
             )
             .group_by("story", "pier")
-            .agg(pl.all().sort_by("ur_adsec_vert").first())
+            .agg(pl.all().sort_by("ur_vert").first())
         )
 
         df_pier_design = (
             self.design_rc_wall_pier
             .select(
-                "story", "pier", "elev", "thickness_min", "grade_min",
+                "story", "pier", "elev", "length", "thickness_min", "grade_min",
                 "model_vert", "outputcase_vert", "station_vert",
-                "ur_pmm_vert", "ur_adsec_vert",
-                "key", "reo_vert", "dia_vert", "perc_vert", "A_s", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",
+                "ur_pmm_vert", "ur_adsec_vert", "ur_vert",
+                "key", "reo_vert", "dia_vert", "perc_vert", "A_s", "s_vert0", *WALL_DIA_VERT,
                 "model_horz", "outputcase_horz", "station_horz",
                 "ur_vc_horz", "ur_vmax_horz", "ur_horz", 
-                "A_sw_s2", "s_horz", "dia_horz0", "dia_horz1", "dia_horz2", "dia_horz3", "dia_horz4", "dia_horz5", "dia_horz6",
+                "A_sw_s2", "s_horz", *WALL_DIA_HORZ,
                 "model_tie", "outputcase_tie", "station_tie",
                 "ur_vc_tie", "ur_vmax_tie", "ur_tie", 
                 "A_sw_s3", "sh_tie", "sv_tie", "dia_tie",
             )
-            .filter(pl.col("ur_adsec_vert") <= ur_limit)
+            .filter(pl.col("ur_vert") <= ur_limit)
             .group_by("story", "pier")
             .agg(
                 pl.all().sort_by("A_s").first(),
@@ -1870,15 +2053,16 @@ class RcDesignMixin(AdSecMixin):
                 pl.col("thickness_min").min().alias("thickness_min"),
                 pl.col("thickness_min").max().alias("thickness_max"),
                 pl.col("elev", "grade_min").first(),
+                pl.col("length").max(),
                 pl.col(
                     "model_vert", "outputcase_vert", "station_vert",
-                    "ur_pmm_vert", "ur_adsec_vert",
-                    "key", "reo_vert", "dia_vert", "perc_vert", "A_s", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",
+                    "ur_pmm_vert", "ur_adsec_vert", "ur_vert",
+                    "key", "reo_vert", "dia_vert", "perc_vert", "A_s", "s_vert0", *WALL_DIA_VERT,
                 ).sort_by("A_s").last(),
                 pl.col(
                     "model_horz", "outputcase_horz", "station_horz",
                     "ur_vc_horz", "ur_vmax_horz", "ur_horz", 
-                    "A_sw_s2", "s_horz", "dia_horz0", "dia_horz1", "dia_horz2", "dia_horz3", "dia_horz4", "dia_horz5", "dia_horz6",
+                    "A_sw_s2", "s_horz", *WALL_DIA_HORZ,
                 ).sort_by("A_sw_s2").last(),
                 pl.col(
                     "model_tie", "outputcase_tie", "station_tie",
@@ -1909,15 +2093,16 @@ class RcDesignMixin(AdSecMixin):
                 pl.col("story", "elev").sort_by("elev").last(),
                 pl.col("piers", "story_below", "elev_below").sort_by("elev_below").first(),
                 pl.col("grade_min").min(),
+                pl.col("length").max(),
                 pl.col(
                     "model_vert", "outputcase_vert", "station_vert",
-                    "ur_pmm_vert", "ur_adsec_vert",
-                    "key", "reo_vert", "dia_vert", "perc_vert", "A_s", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",
+                    "ur_pmm_vert", "ur_adsec_vert", "ur_vert",
+                    "key", "reo_vert", "dia_vert", "perc_vert", "A_s", "s_vert0", *WALL_DIA_VERT,
                 ).sort_by("A_s").last(),
                 pl.col(
                     "model_horz", "outputcase_horz", "station_horz",
                     "ur_vc_horz", "ur_vmax_horz", "ur_horz", 
-                    "A_sw_s2", "s_horz", "dia_horz0", "dia_horz1", "dia_horz2", "dia_horz3", "dia_horz4", "dia_horz5", "dia_horz6",
+                    "A_sw_s2", "s_horz", *WALL_DIA_HORZ,
                 ).sort_by("A_sw_s2").last(),
                 pl.col(
                     "model_tie", "outputcase_tie", "station_tie",
@@ -2110,16 +2295,16 @@ class RcDesignMixin(AdSecMixin):
         """Generate the reo table given the list of wall thickness_min applicable to all piers
         """
 
-        self.design_rc_wall_pier = sec_c.populate_reo_wall_vert_6(self.design_rc_wall_pier, perc_vert, dia_vert, s_vert, cover=cover, dia_horz=dia_horz)
+        self.design_rc_wall_pier = sec_c.populate_reo_wall_vert(self.design_rc_wall_pier, perc_vert, dia_vert, s_vert, n_layers=WALL_LAYERS, cover=cover, dia_horz=dia_horz)
 
         self.design_rc_wall_pier = (
             self.design_rc_wall_pier
             .with_columns(
-                pl.Series("key", generate_keys("rc_wall_u_6", self.design_rc_wall_pier.select(get_columns("rc_wall_u_6"))), dtype=pl.String)
+                pl.Series("key", generate_keys(WALL_SECTION, self.design_rc_wall_pier.select(get_columns(WALL_SECTION))), dtype=pl.String)
             )
         )
 
-        self.design_rc_wall_pier = generate_reo_vert(self.design_rc_wall_pier, "rc_wall_u_6")
+        self.design_rc_wall_pier = generate_reo_vert(self.design_rc_wall_pier, WALL_SECTION)
 
         self.design_rc_wall_force_v2 = (
             self.design_rc_wall_force_v2
@@ -2133,11 +2318,11 @@ class RcDesignMixin(AdSecMixin):
 
         return self
     
-    def _design_rc_wall_calculate_pm_wall_6(self):
+    def _design_rc_wall_calculate_pm(self):
         """Calculate the pmm simplified curve
         """
 
-        self.design_rc_wall_pier = pm_c.calculate_pm_wall_6(self.design_rc_wall_pier)
+        self.design_rc_wall_pier = pm_c.calculate_pm_wall(self.design_rc_wall_pier, n_layers=WALL_LAYERS)
 
         self.design_rc_wall_force_pmm = (
             self.design_rc_wall_force_pmm
@@ -2157,30 +2342,17 @@ class RcDesignMixin(AdSecMixin):
         self.design_rc_wall_force_pmm = rc_c.calculate_material(self.design_rc_wall_force_pmm)
         pbar.update(1)
         self.design_rc_wall_force_pmm = rc_c.calculate_effective_length_wall(self.design_rc_wall_force_pmm)
-        self.design_rc_wall_force_pmm = rc_c.calculate_effective_depth_wall_6(self.design_rc_wall_force_pmm)
+        self.design_rc_wall_force_pmm = rc_c.calculate_effective_depth_wall(self.design_rc_wall_force_pmm)
         pbar.update(1)
         self.design_rc_wall_force_pmm = rc_c.calculate_eccentricity_0_i(self.design_rc_wall_force_pmm)
         pbar.update(1)
         self.design_rc_wall_force_pmm = rc_c.calculate_creep(self.design_rc_wall_force_pmm)
         pbar.update(1)
-        self.design_rc_wall_force_pmm = rc_c.calculate_slenderness_3(self.design_rc_wall_force_pmm)
+        self.design_rc_wall_force_pmm = rc_c.calculate_slenderness(self.design_rc_wall_force_pmm)
         pbar.update(1)
         self.design_rc_wall_force_pmm = rc_c.calculate_eccentricity_2(self.design_rc_wall_force_pmm)
         pbar.update(1)
         self.design_rc_wall_force_pmm = rc_c.calculate_design_moment(self.design_rc_wall_force_pmm)
-        pbar.update(1)
-        pbar.close()
-
-        return self
-    
-    def _design_rc_wall_calculate_ur_pmm_simplified_biaxial(self):
-        """Calculate the pmm ur with the Eurocode 2 simplified method
-        """
-
-        pbar = tqdm(total=2, desc="Calculating ur pmm simplified biaxial")
-        self.design_rc_wall_force_pmm = rc_c.calculate_moment_capacity_simplified_biaxial(self.design_rc_wall_force_pmm)
-        pbar.update(1)
-        self.design_rc_wall_force_pmm = rc_c.calculate_ur_biaxial(self.design_rc_wall_force_pmm)
         pbar.update(1)
         pbar.close()
 
@@ -2209,11 +2381,11 @@ class RcDesignMixin(AdSecMixin):
         pbar.update(1)
         self.design_rc_wall_force_v2 = rc_c.calculate_material(self.design_rc_wall_force_v2)
         pbar.update(1)
-        self.design_rc_wall_force_v2 = rc_c.calculate_capacity_shear_concrete_6(self.design_rc_wall_force_v2)
+        self.design_rc_wall_force_v2 = rc_c.calculate_capacity_shear_concrete(self.design_rc_wall_force_v2)
         pbar.update(1)
         self.design_rc_wall_force_v2 = rc_c.calculate_capacity_shear_max(self.design_rc_wall_force_v2)
         pbar.update(1)
-        self.design_rc_wall_force_v2 = rc_c.calculate_required_shear_reo_wall6(self.design_rc_wall_force_v2)
+        self.design_rc_wall_force_v2 = rc_c.calculate_required_shear_reo_wall(self.design_rc_wall_force_v2)
         pbar.update(1)
         self.design_rc_wall_force_v2 = rc_c.calculate_required_shear_reo2(self.design_rc_wall_force_v2)
         pbar.update(1)
@@ -2221,11 +2393,11 @@ class RcDesignMixin(AdSecMixin):
 
         return self
     
-    def _design_rc_wall_generate_reo_horz_6(self, dia_horz, s_horz, ur_limit_v):
+    def _design_rc_wall_generate_reo_horz(self, dia_horz, s_horz, ur_limit_v):
         """Generate horz reo
         """
 
-        self.design_rc_wall_force_v2 = sec_c.generate_reo_wall_horz_6(self.design_rc_wall_force_v2, "A_sw_s2", dia_horz, s_horz, ur_limit_v)
+        self.design_rc_wall_force_v2 = sec_c.generate_reo_wall_horz(self.design_rc_wall_force_v2, "A_sw_s2", dia_horz, s_horz, ur_limit_v, n_layers=WALL_LAYERS)
 
         return self
     
@@ -2239,11 +2411,11 @@ class RcDesignMixin(AdSecMixin):
         pbar.update(1)
         self.design_rc_wall_force_v3 = rc_c.calculate_material(self.design_rc_wall_force_v3)
         pbar.update(1)
-        self.design_rc_wall_force_v3 = rc_c.calculate_capacity_shear_concrete_6(self.design_rc_wall_force_v3)
+        self.design_rc_wall_force_v3 = rc_c.calculate_capacity_shear_concrete(self.design_rc_wall_force_v3)
         pbar.update(1)
         self.design_rc_wall_force_v3 = rc_c.calculate_capacity_shear_max(self.design_rc_wall_force_v3)
         pbar.update(1)
-        self.design_rc_wall_force_v3 = rc_c.calculate_required_shear_reo_wall6(self.design_rc_wall_force_v3)
+        self.design_rc_wall_force_v3 = rc_c.calculate_required_shear_reo_wall(self.design_rc_wall_force_v3)
         pbar.update(1)
         self.design_rc_wall_force_v3 = rc_c.calculate_required_shear_reo3(self.design_rc_wall_force_v3, ur_limit_v)
         pbar.update(1)
@@ -2251,7 +2423,7 @@ class RcDesignMixin(AdSecMixin):
 
         return self
     
-    def _design_rc_wall_generate_reo_tie_1(self, dia_tie, s_vert, s_horz, ur_limit_v):
+    def _design_rc_wall_generate_reo_tie(self, dia_tie, s_vert, s_horz, ur_limit_v):
         """Generate tie reo
         """
 
@@ -2265,21 +2437,26 @@ class RcDesignMixin(AdSecMixin):
         df_force_pmm = (
             self.design_rc_wall_force_pmm
             .select(
-                "pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",
-                "ur_m2", "ur_m3", "ur_biaxial"
+                "pier", "story", "s_vert0", *WALL_DIA_VERT,
+                "model", "outputcase", "station",
+                pl.max_horizontal("ur_m2", "ur_m3", "ur_biaxial").alias("ur_pmm_vert"),
             )
-            .group_by("pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",)
-            .agg(pl.all().max())
-            .with_columns(ur_pmm_vert = pl.max_horizontal("ur_m2", "ur_m3", "ur_biaxial"))
+            .rename({
+                "model": "model_vert",
+                "outputcase": "outputcase_vert",
+                "station": "station_vert",
+            })
+            .group_by("pier", "story", "s_vert0", *WALL_DIA_VERT,)
+            .agg(pl.all().sort_by("ur_pmm_vert").last())
         )
 
         df_force_v2 = (
             self.design_rc_wall_force_v2
             .select(
-                "pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",
+                "pier", "story", "s_vert0", *WALL_DIA_VERT,
                 "model", "outputcase", "station",
                 "ur_vc", "ur_vmax", "ur_horz",
-                "A_sw_s2", "s_horz", "dia_horz0", "dia_horz1", "dia_horz2", "dia_horz3", "dia_horz4", "dia_horz5", "dia_horz6",
+                "A_sw_s2", "s_horz", *WALL_DIA_HORZ,
             )
             .rename({
                 "model": "model_horz",
@@ -2288,7 +2465,7 @@ class RcDesignMixin(AdSecMixin):
                 "ur_vc": "ur_vc_horz",
                 "ur_vmax": "ur_vmax_horz",
             })
-            .group_by("pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5")
+            .group_by("pier", "story", "s_vert0", *WALL_DIA_VERT)
             .agg(
                 pl.col("ur_vc_horz", "ur_vmax_horz").max(),
                 pl.all().exclude("ur_vc_horz", "ur_vmax_horz").sort_by("A_sw_s2").last())
@@ -2297,7 +2474,7 @@ class RcDesignMixin(AdSecMixin):
         df_force_v3 = (
             self.design_rc_wall_force_v3
             .select(
-                "pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",
+                "pier", "story", "s_vert0", *WALL_DIA_VERT,
                 "model", "outputcase", "station",
                 "ur_vc", "ur_vmax", "ur_tie",
                 "A_sw_s3", "sv_tie", "sh_tie", "dia_tie", 
@@ -2309,7 +2486,7 @@ class RcDesignMixin(AdSecMixin):
                 "ur_vc": "ur_vc_tie",
                 "ur_vmax": "ur_vmax_tie",
             })
-            .group_by("pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",)
+            .group_by("pier", "story", "s_vert0", *WALL_DIA_VERT,)
             .agg(
                 pl.col("ur_vc_tie", "ur_vmax_tie").max(),
                 pl.all().exclude("ur_vc_tie", "ur_vmax_tie").sort_by("A_sw_s3").last(),
@@ -2318,39 +2495,40 @@ class RcDesignMixin(AdSecMixin):
 
         self.design_rc_wall_pier = (
             self.design_rc_wall_pier
-            .update(df_force_pmm, on=["pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",], how="left")
-            .update(df_force_v2, on=["pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",], how="left")
-            .update(df_force_v3, on=["pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",], how="left")
+            .update(df_force_pmm, on=["pier", "story", "s_vert0", *WALL_DIA_VERT,], how="left")
+            .update(df_force_v2, on=["pier", "story", "s_vert0", *WALL_DIA_VERT,], how="left")
+            .update(df_force_v3, on=["pier", "story", "s_vert0", *WALL_DIA_VERT,], how="left")
+            .with_columns(ur_vert = pl.col("ur_pmm_vert"))
         )
 
         self.design_rc_wall_pier = (
             self.design_rc_wall_pier
             .with_columns(
-                pl.Series("key", generate_keys("rc_wall_u_6", self.design_rc_wall_pier.select(get_columns("rc_wall_u_6"))), dtype=pl.String)
+                pl.Series("key", generate_keys(WALL_SECTION, self.design_rc_wall_pier.select(get_columns(WALL_SECTION))), dtype=pl.String)
             )
         )
 
         self.design_rc_wall_force_pmm = (
             self.design_rc_wall_force_pmm
             .update(
-                self.design_rc_wall_pier.select("pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5", "key"), 
-                on=["pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",], how="left"
+                self.design_rc_wall_pier.select("pier", "story", "s_vert0", *WALL_DIA_VERT, "key"), 
+                on=["pier", "story", "s_vert0", *WALL_DIA_VERT,], how="left"
             )
         )
 
         self.design_rc_wall_force_v2 = (
             self.design_rc_wall_force_v2
             .update(
-                self.design_rc_wall_pier.select("pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5", "key"), 
-                on=["pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",], how="left"
+                self.design_rc_wall_pier.select("pier", "story", "s_vert0", *WALL_DIA_VERT, "key"), 
+                on=["pier", "story", "s_vert0", *WALL_DIA_VERT,], how="left"
             )
         )
 
         self.design_rc_wall_force_v3 = (
             self.design_rc_wall_force_v3
             .update(
-                self.design_rc_wall_pier.select("pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5", "key"), 
-                on=["pier", "story", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5",], how="left"
+                self.design_rc_wall_pier.select("pier", "story", "s_vert0", *WALL_DIA_VERT, "key"), 
+                on=["pier", "story", "s_vert0", *WALL_DIA_VERT,], how="left"
             )
         )
 
@@ -2417,6 +2595,7 @@ class RcDesignMixin(AdSecMixin):
         self.design_rc_wall_pier = (
             self.design_rc_wall_pier
             .update(df_force, on=["pier", "story", "key"], how="left")
+            .with_columns(ur_vert = pl.col("ur_adsec_vert"))
         )
 
         return self

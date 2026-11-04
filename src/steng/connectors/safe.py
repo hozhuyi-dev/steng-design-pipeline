@@ -1,9 +1,4 @@
-"""A library that wraps the SAFE API.
-
-Classes:
-SAFE -- A class attach to an instance with useful methods
-
-Functions:
+"""Safe: wrapper over the SAFE API, through pythonnet: materials, sections and objects, and table exports
 """
 
 import sys

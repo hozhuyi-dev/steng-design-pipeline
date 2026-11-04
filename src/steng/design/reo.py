@@ -1,6 +1,4 @@
-"""Functions for generating the reinforcement in slabs, beams, columns and walls
-
-Functions:
+"""Reinforcement layouts for beams from the areas required: bars for flexure and links for shear
 """
 
 import numpy as np

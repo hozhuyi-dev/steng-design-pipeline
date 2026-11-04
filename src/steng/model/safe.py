@@ -1,9 +1,4 @@
-"""An interface to convert between SAFE and standardised model
-
-Interfaces:
-SafeMixin -- A class for interfacing with SAFE
-
-Functions:
+"""SafeMixin: pushes a story of the standard model to SAFE
 """
 
 import polars as pl

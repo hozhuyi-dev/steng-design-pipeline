@@ -24,7 +24,7 @@ frame_assignments_-_section_properties,1,1,1,,,1,,,
 area_assignments_-_pier_labels,1,1,1,,,,,,1
 area_assignments_-_section_properties,1,1,1,,,,1,,1
 area_assignments_-_spandrel_labels,1,1,1,,,,1,,
-pier_section_properties,1,1,1,1,,,,,
+pier_section_properties,1,1,1,1,,,,,1
 spandrel_section_properties,1,1,1,,,,1,,
 shell_uniform_load_sets,1,1,,,,,,,
 load_case_definitions_-_summary,1,1,,,,,,,

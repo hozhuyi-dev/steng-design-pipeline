@@ -2,9 +2,6 @@
 
 A design force (P, M2, M3) is a ray from the origin. Scaling it by t reaches the failure surface,
 so the utilisation ratio is 1 / t. Each ray is paired with one candidate triangle of the surface.
-
-Functions:
-rays_triangles_intersection -- Intersect each ray from the origin with its triangle
 """
 
 import numpy as np

@@ -1,9 +1,4 @@
-"""An interface to convert Rhino to standardised model
-
-Interfaces:
-RhinoMixin -- A class for interfacing with Rhino
-
-Functions:
+"""RhinoMixin: converts Rhino and Grasshopper geometry to the standard model
 """
 
 import polars as pl

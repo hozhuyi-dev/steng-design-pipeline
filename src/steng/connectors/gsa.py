@@ -1,9 +1,4 @@
-"""A library that wraps the GSA API.
-
-Classes:
-GSA -- A class 
-
-Functions:
+"""Wrapper over the GSA API, through pythonnet
 """
 
 import datetime

@@ -1,6 +1,5 @@
-"""Functions built on numpy and sympy for eurocode2-1-1 2004
-
-Functions:
+"""EN 1992-1-1:2004 on NumPy arrays, one function per expression, table or clause, named for it:
+exp5_33_e_2 is expression 5.33 for e_2, cl6_1_4_e_0 is clause 6.1(4) for e_0
 """
 
 import numpy as np
@@ -131,8 +130,10 @@ def exp5_33_e_2(one_r, l_0):
     return one_r * (l_0 ** 2) / C
 
 def exp5_33_M_2(M_Ed, N_Ed, e_2):
+    # Takes the sign of the first-order moment, and is positive where there is none (5.8.8.2(1))
+    sign = np.where(M_Ed == 0, 1.0, np.sign(M_Ed))
     M_2 = np.full(len(M_Ed), 0.0)
-    M_2[N_Ed >= 0] = np.sign(M_Ed[N_Ed >= 0]) * np.abs(N_Ed[N_Ed >= 0]) * e_2[N_Ed >= 0] / 1000
+    M_2[N_Ed >= 0] = sign[N_Ed >= 0] * np.abs(N_Ed[N_Ed >= 0]) * e_2[N_Ed >= 0] / 1000
     return M_2
 
 # Expression 5.34
@@ -339,14 +340,9 @@ def exp6_52_v_Rd_cs(v_Rd_c, s_r, A_sw, f_ywd_ef, u_1, alpha):
 # ----- Section 9
 
 # Clause 9.6.3(1)
-def cl9_6_3_1_A_sw_s_min1(s_vert, dia_vert0, dia_vert1, dia_vert2, dia_vert3, dia_vert4, dia_vert5):
-    A_vert0 = (dia_vert0 ** 2) / 4 * np.pi
-    A_vert1 = (dia_vert1 ** 2) / 4 * np.pi
-    A_vert2 = (dia_vert2 ** 2) / 4 * np.pi
-    A_vert3 = (dia_vert3 ** 2) / 4 * np.pi
-    A_vert4 = (dia_vert4 ** 2) / 4 * np.pi
-    A_vert5 = (dia_vert5 ** 2) / 4 * np.pi
-    return 0.25 * 2 * (A_vert0 + A_vert1 + A_vert2 + A_vert3 + A_vert4 + A_vert5) / s_vert
+def cl9_6_3_1_A_sw_s_min1(s_vert, *dia_vert):
+    """Horizontal bars of at least 25% of the vertical: every layer on both faces at s_vert"""
+    return 0.25 * 2 * sum((dia ** 2) / 4 * np.pi for dia in dia_vert) / s_vert
 
 def cl9_6_3_1_A_sw_s_min2(b):
     return 0.001 * b

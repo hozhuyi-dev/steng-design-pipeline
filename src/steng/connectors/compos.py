@@ -1,9 +1,4 @@
-"""A library that wraps the COMPOS API.
-
-Classes:
-COMPOS -- A class 
-
-Functions:
+"""Wrapper over the Compos API, through COM
 """
 
 import datetime

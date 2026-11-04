@@ -1,10 +1,6 @@
-"""Functions for utilities in Grasshopper Python
+"""Helpers for Grasshopper Python: nested lists to and from Grasshopper data trees
 
 Grasshopper's data trees are converted with ghpythonlib.treehelpers, which ships with Rhino.
-
-Functions:
-list_to_tree -- Nested lists to a Grasshopper DataTree
-input_to_list -- Grasshopper inputs to lists of lists
 """
 
 

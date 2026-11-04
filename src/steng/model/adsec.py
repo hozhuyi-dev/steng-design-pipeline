@@ -1,9 +1,4 @@
-"""An interface to interact with Adsec
-
-Classes:
-AdSecMixin -- An interface to interact with Adsec
-
-Functions:
+"""AdSecMixin: force-moment curves and failure surfaces from AdSec, which is loaded only when used
 """
 
 import polars as pl

@@ -1,14 +1,11 @@
-"""An interface to convert ETABS to standardised model
-
-Interfaces:
-EtabsMixin -- A class for interfacing with ETABS
-
-Functions:
+"""EtabsMixin: converts ETABS table exports to the standard model, and pushes a story back to ETABS
 """
 
 import polars as pl
 
 DEFAULT_UZ = 0.0125
+CASE_TYPES = {"LinStatic": "static", "LinModEigen": "modal", "LinRespSpec": "response_spectrum", "Combination": "combination"}
+FORCES = ["fx", "fy", "fz", "mxx", "myy", "mzz"]
 
 class EtabsMixin:
     def __init__(self):
@@ -1046,80 +1043,20 @@ class EtabsMixin:
         return df_wall
     
     # ----- global -----
-    
+
     def _expand_base_reaction(self):
         """Return a df of base reactions
         """
 
         if self.etabs["base_reactions"] is None:
             return None
-        
-        if "steptype" in self.etabs["base_reactions"].columns:
-            df_reaction = (
-                self.etabs["base_reactions"]
-                .select("outputcase", "casetype", "steptype", "stepnumber", "fx", "fy", "fz", "mx", "my", "mz")
-                .rename({
-                    "casetype": "outputcasetype",
-                    "mx": "mxx",
-                    "my": "myy", 
-                    "mz": "mzz",
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = (
-                        pl.when(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True) == "").then(pl.lit(None))
-                        .otherwise(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True))
-                    ),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .cast({
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-            )
-        else:
-            df_reaction = (
-                self.etabs["base_reactions"]
-                .select("outputcase", "casetype", "fx", "fy", "fz", "mx", "my", "mz")
-                .rename({
-                    "casetype": "outputcasetype",
-                    "mx": "mxx",
-                    "my": "myy", 
-                    "mz": "mzz",
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                )
-                .cast({
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-            )
 
-        return df_reaction
-    
+        return (
+            _standardise_cases(self.etabs["base_reactions"])
+            .rename({"mx": "mxx", "my": "myy", "mz": "mzz"})
+            .cast({column: pl.Float64 for column in FORCES})
+        )
+
     def _expand_story_mass(self):
         """Return a df of story mass
         """
@@ -1142,316 +1079,51 @@ class EtabsMixin:
         )
     
     def _expand_story_force(self):
-        """Return a df of story force
+        """Return a df of story forces, at the top (station 1) and bottom (station 0) of each story
         """
 
         if self.etabs["story_forces"] is None:
             return None
-        
-        if "stepnumber" in self.etabs["story_forces"].columns:
-            df_story_force = (
-                self.etabs["story_forces"]
-                .rename({
-                    "casetype": "outputcasetype",
-                    "location": "station",
-                    "p": "fx",
-                    "vx": "fy", 
-                    "vy": "fz",
-                    "t": "mxx",
-                    "mx": "myy",
-                    "my": "mzz",
-                })
-                .with_columns(
-                    station = pl.when(pl.col("station") == "Top").then(pl.lit(1.0)).otherwise(pl.lit(0.0)),
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = (
-                        pl.when(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True) == "").then(pl.lit(None))
-                        .otherwise(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True))
-                    ),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-            )
-        elif "steptype" in self.etabs["story_forces"].columns:
-            df_story_force = (
-                self.etabs["story_forces"]
-                .rename({
-                    "casetype": "outputcasetype",
-                    "location": "station",
-                    "p": "fx",
-                    "vx": "fy", 
-                    "vy": "fz",
-                    "t": "mxx",
-                    "mx": "myy",
-                    "my": "mzz",
-                })
-                .with_columns(
-                    station = pl.when(pl.col("station") == "Top").then(pl.lit(1.0)).otherwise(pl.lit(0.0)),
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = pl.col("steptype"),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-            )
-        else:
-            df_story_force = (
-                self.etabs["story_forces"]
-                .rename({
-                    "casetype": "outputcasetype",
-                    "location": "station",
-                    "p": "fx",
-                    "vx": "fy", 
-                    "vy": "fz",
-                    "t": "mxx",
-                    "mx": "myy",
-                    "my": "mzz",
-                })
-                .with_columns(
-                    station = pl.when(pl.col("station") == "Top").then(pl.lit(1.0)).otherwise(pl.lit(0.0)),
-                )
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-            )
 
-        return df_story_force
-    
+        return (
+            _standardise_cases(self.etabs["story_forces"])
+            .rename({"p": "fx", "vx": "fy", "vy": "fz", "t": "mxx", "mx": "myy", "my": "mzz"})
+            .with_columns(station = _station_at("Top"))
+            .cast({column: pl.Float64 for column in ["station", *FORCES]})
+        )
+
     def _expand_story_displacement(self):
-        """Return a df of story displacement
+        """Return a df of story displacements, maximum and average in each direction
         """
 
-        if self.etabs["story_max_over_avg_displacements"] is None:
-            return None
-        
-        if "stepnumber" in self.etabs["story_max_over_avg_displacements"].columns:
-            df_story_displacement = (
-                self.etabs["story_max_over_avg_displacements"]
-                .rename({
-                    "casetype": "outputcasetype",
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = (
-                        pl.when(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True) == "").then(pl.lit(None))
-                        .otherwise(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True))
-                    ),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .pivot("direction", index=["story", "outputcase", "outputcasetype", "steptype", "stepnumber"])
-                .rename({
-                    "maximum_X": "ux_max",
-                    "maximum_Y": "uy_max",
-                    "average_X": "ux_avg",
-                    "average_Y": "uy_avg",
-                })
-                .cast({
-                    "ux_max": pl.Float64,
-                    "uy_max": pl.Float64,
-                    "ux_avg": pl.Float64,
-                    "uy_avg": pl.Float64,
-                })
-            )
-        elif "steptype" in self.etabs["story_max_over_avg_displacements"].columns:
-            df_story_displacement = (
-                self.etabs["story_max_over_avg_displacements"]
-                .rename({
-                    "casetype": "outputcasetype",
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = pl.col("steptype"),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .pivot("direction", index=["story", "outputcase", "outputcasetype", "steptype"])
-                .rename({
-                    "maximum_X": "ux_max",
-                    "maximum_Y": "uy_max",
-                    "average_X": "ux_avg",
-                    "average_Y": "uy_avg",
-                })
-                .cast({
-                    "ux_max": pl.Float64,
-                    "uy_max": pl.Float64,
-                    "ux_avg": pl.Float64,
-                    "uy_avg": pl.Float64,
-                })
-            )
-        else:
-            df_story_displacement = (
-                self.etabs["story_max_over_avg_displacements"]
-                .rename({
-                    "casetype": "outputcasetype",
-                })
-                .pivot("direction", index=["story", "outputcase", "outputcasetype"])
-                .rename({
-                    "maximum_X": "ux_max",
-                    "maximum_Y": "uy_max",
-                    "average_X": "ux_avg",
-                    "average_Y": "uy_avg",
-                })
-                .cast({
-                    "ux_max": pl.Float64,
-                    "uy_max": pl.Float64,
-                    "ux_avg": pl.Float64,
-                    "uy_avg": pl.Float64,
-                })
-            )
-        
-        return df_story_displacement
-    
+        return self._expand_story_extremes("story_max_over_avg_displacements", "maximum", "average")
+
     def _expand_story_drift(self):
-        """Return a df of story drift
+        """Return a df of story drifts, maximum and average in each direction
         """
 
-        if self.etabs["story_max_over_avg_drifts"] is None:
+        return self._expand_story_extremes("story_max_over_avg_drifts", "max_drift", "avg_drift")
+
+    def _expand_story_extremes(self, table, maximum, average):
+        """Return a df of a story table's maximum and average in X and Y, one row per story and case
+        """
+
+        if self.etabs[table] is None:
             return None
 
-        if "stepnumber" in self.etabs["story_max_over_avg_drifts"].columns:
-            df_story_drift = (
-                self.etabs["story_max_over_avg_drifts"]
-                .rename({
-                    "casetype": "outputcasetype",
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = pl.col("steptype"),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .pivot("direction", index=["story", "outputcase", "outputcasetype", "steptype", "stepnumber"])
-                .rename({
-                    "max_drift_X": "ux_max",
-                    "max_drift_Y": "uy_max",
-                    "avg_drift_X": "ux_avg",
-                    "avg_drift_Y": "uy_avg",
-                })
-                .cast({
-                    "ux_max": pl.Float64,
-                    "uy_max": pl.Float64,
-                    "ux_avg": pl.Float64,
-                    "uy_avg": pl.Float64,
-                })
-            )
-        elif "steptype" in self.etabs["story_max_over_avg_drifts"].columns:
-            df_story_drift = (
-                self.etabs["story_max_over_avg_drifts"]
-                .rename({
-                    "casetype": "outputcasetype",
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = (
-                        pl.when(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True) == "").then(pl.lit(None))
-                        .otherwise(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True))
-                    ),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .pivot("direction", index=["story", "outputcase", "outputcasetype", "steptype"])
-                .rename({
-                    "max_drift_X": "ux_max",
-                    "max_drift_Y": "uy_max",
-                    "avg_drift_X": "ux_avg",
-                    "avg_drift_Y": "uy_avg",
-                })
-                .cast({
-                    "ux_max": pl.Float64,
-                    "uy_max": pl.Float64,
-                    "ux_avg": pl.Float64,
-                    "uy_avg": pl.Float64,
-                })
-            )
-        else:
-            df_story_drift = (
-                self.etabs["story_max_over_avg_drifts"]
-                .rename({
-                    "casetype": "outputcasetype",
-                })
-                .pivot("direction", index=["story", "outputcase", "outputcasetype"])
-                .rename({
-                    "max_drift_X": "ux_max",
-                    "max_drift_Y": "uy_max",
-                    "avg_drift_X": "ux_avg",
-                    "avg_drift_Y": "uy_avg",
-                })
-                .cast({
-                    "ux_max": pl.Float64,
-                    "uy_max": pl.Float64,
-                    "ux_avg": pl.Float64,
-                    "uy_avg": pl.Float64,
-                })
-            )
+        return (
+            _standardise_cases(self.etabs[table])
+            .select("story", "outputcase", "outputcasetype", "direction", maximum, average)
+            .pivot("direction", index=["story", "outputcase", "outputcasetype"])
+            .rename({
+                f"{maximum}_X": "ux_max",
+                f"{maximum}_Y": "uy_max",
+                f"{average}_X": "ux_avg",
+                f"{average}_Y": "uy_avg",
+            })
+            .cast({column: pl.Float64 for column in ["ux_max", "uy_max", "ux_avg", "uy_avg"]})
+        )
 
-        return df_story_drift
-    
     def _expand_modal(self):
         """Return a df of story drift
         """
@@ -1481,110 +1153,13 @@ class EtabsMixin:
 
         if self.etabs["joint_displacements"] is None:
             return None
-        
-        if "stepnumber" in self.etabs["joint_displacements"].columns:
-            df_displacement = (
-                self.etabs["joint_displacements"]
-                .select("uniquename", "story", "outputcase", "casetype", "steptype", "stepnumber", "ux", "uy", "uz", "rx", "ry", "rz")
-                .rename({
-                    "uniquename": "unique_point",
-                    "casetype": "outputcasetype",
-                    "rx": "rxx",
-                    "ry": "ryy", 
-                    "rz": "rzz",
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = (
-                        pl.when(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True) == "").then(pl.lit(None))
-                        .otherwise(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True))
-                    ),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .cast({
-                    "ux": pl.Float64,
-                    "uy": pl.Float64,
-                    "uz": pl.Float64,
-                    "rxx": pl.Float64,
-                    "ryy": pl.Float64,
-                    "rzz": pl.Float64,
-                })
-            )
-        elif "steptype" in self.etabs["joint_displacements"].columns:
-            df_displacement = (
-                self.etabs["joint_displacements"]
-                .select("uniquename", "story", "outputcase", "casetype", "steptype", "ux", "uy", "uz", "rx", "ry", "rz")
-                .rename({
-                    "uniquename": "unique_point",
-                    "casetype": "outputcasetype",
-                    "rx": "rxx",
-                    "ry": "ryy", 
-                    "rz": "rzz",
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = (
-                        pl.when(pl.col("steptype").str.to_lowercase().str.replace_all(" ", "") == "").then(pl.lit(None))
-                        .otherwise(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""))
-                    ),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .cast({
-                    "ux": pl.Float64,
-                    "uy": pl.Float64,
-                    "uz": pl.Float64,
-                    "rxx": pl.Float64,
-                    "ryy": pl.Float64,
-                    "rzz": pl.Float64,
-                })
-            )
-        else:
-            df_displacement = (
-                self.etabs["joint_displacements"]
-                .select("uniquename", "story", "outputcase", "casetype", "ux", "uy", "uz", "rx", "ry", "rz")
-                .rename({
-                    "uniquename": "unique_point",
-                    "casetype": "outputcasetype",
-                    "rx": "rxx",
-                    "ry": "ryy", 
-                    "rz": "rzz",
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                )
-                .cast({
-                    "ux": pl.Float64,
-                    "uy": pl.Float64,
-                    "uz": pl.Float64,
-                    "rxx": pl.Float64,
-                    "ryy": pl.Float64,
-                    "rzz": pl.Float64,
-                })
-            )
 
-        return df_displacement
+        return (
+            _standardise_cases(self.etabs["joint_displacements"])
+            .select("uniquename", "story", "outputcase", "outputcasetype", "ux", "uy", "uz", "rx", "ry", "rz")
+            .rename({"uniquename": "unique_point", "rx": "rxx", "ry": "ryy", "rz": "rzz"})
+            .cast({column: pl.Float64 for column in ["ux", "uy", "uz", "rxx", "ryy", "rzz"]})
+        )
 
     def _expand_joint_reaction(self):
         """Return a df of joint reaction
@@ -1592,557 +1167,98 @@ class EtabsMixin:
 
         if self.etabs["joint_reactions"] is None:
             return None
-        
-        if "stepnumber" in self.etabs["joint_reactions"].columns:
-            df_reaction =  (
-                self.etabs["joint_reactions"]
-                .select("uniquename", "story", "outputcase", "casetype", "steptype", "stepnumber", "fx", "fy", "fz", "mx", "my", "mz")
-                .rename({
-                    "uniquename": "unique_point",
-                    "casetype": "outputcasetype",
-                    "mx": "mxx",
-                    "my": "myy", 
-                    "mz": "mzz",
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = (
-                        pl.when(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True) == "").then(pl.lit(None))
-                        .otherwise(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True))
-                    ),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .cast({
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-            )
-        elif "steptype" in self.etabs["joint_reactions"].columns:
-            df_reaction =  (
-                self.etabs["joint_reactions"]
-                .select("uniquename", "story", "outputcase", "casetype", "steptype", "fx", "fy", "fz", "mx", "my", "mz")
-                .rename({
-                    "uniquename": "unique_point",
-                    "casetype": "outputcasetype",
-                    "mx": "mxx",
-                    "my": "myy", 
-                    "mz": "mzz",
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = (
-                        pl.when(pl.col("steptype").str.to_lowercase().str.replace_all(" ", "") == "").then(pl.lit(None))
-                        .otherwise(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""))
-                    ),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .cast({
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-            )
-        else:
-            df_reaction =  (
-                self.etabs["joint_reactions"]
-                .select("uniquename", "story", "outputcase", "casetype", "fx", "fy", "fz", "mx", "my", "mz")
-                .rename({
-                    "uniquename": "unique_point",
-                    "casetype": "outputcasetype",
-                    "mx": "mxx",
-                    "my": "myy", 
-                    "mz": "mzz",
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                )
-                .cast({
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-            )
-        
-        return df_reaction
 
-    
+        return (
+            _standardise_cases(self.etabs["joint_reactions"])
+            .select("uniquename", "story", "outputcase", "outputcasetype", "fx", "fy", "fz", "mx", "my", "mz")
+            .rename({"uniquename": "unique_point", "mx": "mxx", "my": "myy", "mz": "mzz"})
+            .cast({column: pl.Float64 for column in FORCES})
+        )
+
     # ----- result frame pier -----
 
     def _expand_force_column(self):
-        """Return a df of column force
+        """Return a df of column forces, at stations along each column from its bottom [m]
         """
 
-        if self.etabs["element_forces_-_columns"] is None:
-            return None
-        
-        if "stepnumber" in self.etabs["element_forces_-_columns"].columns:
-            df_column_force = (
-                self.etabs["element_forces_-_columns"]
-                .select("uniquename", "story", "outputcase", "casetype", "steptype", "stepnumber", "station", "p", "v2", "v3", "t", "m2", "m3")
-                .rename({
-                    "uniquename": "unique_line",
-                    "casetype": "outputcasetype",
-                    "p": "fx",
-                    "v2": "fy",
-                    "v3": "fz",
-                    "t": "mxx",
-                    "m2": "myy",
-                    "m3": "mzz",
-                })
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = (
-                        pl.when(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True) == "").then(pl.lit(None))
-                        .otherwise(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True))
-                    ),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .select("unique_line", "story", "station", "outputcase", "outputcasetype", "fx", "fy", "fz", "mxx", "myy", "mzz")
-            )
-        elif "steptype" in self.etabs["element_forces_-_columns"].columns:
-            df_column_force = (
-                self.etabs["element_forces_-_columns"]
-                .select("uniquename", "story", "outputcase", "casetype", "steptype", "station", "p", "v2", "v3", "t", "m2", "m3")
-                .rename({
-                    "uniquename": "unique_line",
-                    "casetype": "outputcasetype",
-                    "p": "fx",
-                    "v2": "fy",
-                    "v3": "fz",
-                    "t": "mxx",
-                    "m2": "myy",
-                    "m3": "mzz",
-                })
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-                .with_columns(
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = pl.col("steptype"),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .select("unique_line", "story", "station", "outputcase", "outputcasetype", "fx", "fy", "fz", "mxx", "myy", "mzz")
-            )
-        else:
-            df_column_force = (
-                self.etabs["element_forces_-_columns"]
-                .select("uniquename", "story", "outputcase", "casetype", "station", "p", "v2", "v3", "t", "m2", "m3")
-                .rename({
-                    "uniquename": "unique_line",
-                    "casetype": "outputcasetype",
-                    "p": "fx",
-                    "v2": "fy",
-                    "v3": "fz",
-                    "t": "mxx",
-                    "m2": "myy",
-                    "m3": "mzz",
-                })
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-                .select("unique_line", "story", "station", "outputcase", "outputcasetype", "fx", "fy", "fz", "mxx", "myy", "mzz")
-            )
-        
-        if self.etabs["design_forces_-_columns"] is None:
-            pass
-        else:
-            df_column_force = df_column_force.vstack(
-                self.etabs["design_forces_-_columns"]
-                .select("uniquename", "story", "combo", "station", "p", "v2", "v3", "t", "m2", "m3")
-                .rename({
-                    "uniquename": "unique_line",
-                    "combo": "outputcase",
-                    "p": "fx",
-                    "v2": "fy",
-                    "v3": "fz",
-                    "t": "mxx",
-                    "m2": "myy",
-                    "m3": "mzz",
-                })
-                .with_columns(
-                    outputcasetype = pl.lit("combination"),
-                )
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-                .select("unique_line", "story", "station", "outputcase", "outputcasetype", "fx", "fy", "fz", "mxx", "myy", "mzz")
-            )
-        
-        return df_column_force
-    
+        return self._expand_frame_forces(
+            "element_forces_-_columns", "design_forces_-_columns", ["unique_line", "story"], pl.col("station"),
+        )
+
     def _expand_force_pier(self):
-        """Return a df of pier force
+        """Return a df of pier forces, at the top (station 1) and bottom (station 0) of each story
         """
 
-        if self.etabs["pier_forces"] is None:
-            return None
-        
-        if "stepnumber" in self.etabs["pier_forces"].columns:
-            df_pier_force = (
-                self.etabs["pier_forces"]
-                .select("pier", "story", "outputcase", "casetype", "steptype", "stepnumber", "location", "p", "v2", "v3", "t", "m2", "m3")
-                .rename({
-                    "casetype": "outputcasetype",
-                    "location": "station",
-                    "p": "fx",
-                    "v2": "fy",
-                    "v3": "fz",
-                    "t": "mxx",
-                    "m2": "myy",
-                    "m3": "mzz",
-                })
-                .with_columns(
-                    station = pl.when(pl.col("station") == "Top").then(pl.lit(1.0)).otherwise(pl.lit(0.0)),
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = (
-                        pl.when(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True) == "").then(pl.lit(None))
-                        .otherwise(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True))
-                    ),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-                .select("pier", "story", "station", "outputcase", "outputcasetype", "fx", "fy", "fz", "mxx", "myy", "mzz")
-            )
-        elif "steptype" in self.etabs["pier_forces"].columns:
-            df_pier_force = (
-                self.etabs["pier_forces"]
-                .select("pier", "story", "outputcase", "casetype", "steptype", "location", "p", "v2", "v3", "t", "m2", "m3")
-                .rename({
-                    "casetype": "outputcasetype",
-                    "location": "station",
-                    "p": "fx",
-                    "v2": "fy",
-                    "v3": "fz",
-                    "t": "mxx",
-                    "m2": "myy",
-                    "m3": "mzz",
-                })
-                .with_columns(
-                    station = pl.when(pl.col("station") == "Top").then(pl.lit(1.0)).otherwise(pl.lit(0.0)),
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = pl.col("steptype"),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-                .select("pier", "story", "station", "outputcase", "outputcasetype", "fx", "fy", "fz", "mxx", "myy", "mzz")
-            )
-        else:
-            df_pier_force = (
-                self.etabs["pier_forces"]
-                .select("pier", "story", "outputcase", "casetype", "location", "p", "v2", "v3", "t", "m2", "m3")
-                .rename({
-                    "casetype": "outputcasetype",
-                    "location": "station",
-                    "p": "fx",
-                    "v2": "fy",
-                    "v3": "fz",
-                    "t": "mxx",
-                    "m2": "myy",
-                    "m3": "mzz",
-                })
-                .with_columns(
-                    station = pl.when(pl.col("station") == "Top").then(pl.lit(1.0)).otherwise(pl.lit(0.0))
-                )
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-                .select("pier", "story", "station", "outputcase", "outputcasetype", "fx", "fy", "fz", "mxx", "myy", "mzz")
-            )
-        
-        if self.etabs["design_forces_-_piers"] is None:
-            pass
-        else:
-            df_pier_force = df_pier_force.vstack(
-                self.etabs["design_forces_-_piers"]
-                .select("pier", "story", "combo", "location", "p", "v2", "v3", "t", "m2", "m3")
-                .rename({
-                    "combo": "outputcase",
-                    "location": "station",
-                    "p": "fx",
-                    "v2": "fy",
-                    "v3": "fz",
-                    "t": "mxx",
-                    "m2": "myy",
-                    "m3": "mzz",
-                })
-                .with_columns(
-                    station = pl.when(pl.col("station") == "Top").then(pl.lit(1.0)).otherwise(pl.lit(0.0)),
-                    outputcasetype = pl.lit("combination"),
-                )
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-                .select("pier", "story", "station", "outputcase", "outputcasetype", "fx", "fy", "fz", "mxx", "myy", "mzz")
-            )
-        
-        return df_pier_force
-    
+        return self._expand_frame_forces("pier_forces", "design_forces_-_piers", ["pier", "story"], _station_at("Top"))
+
     def _expand_force_spandrel(self):
-        """Return a df of spandrel force
+        """Return a df of spandrel forces, at the right (station 1) and left (station 0) end of each spandrel
         """
 
-        if self.etabs["spandrel_forces"] is None:
+        return self._expand_frame_forces(
+            "spandrel_forces", "design_forces_-_spandrels", ["spandrel", "story"], _station_at("Right"),
+        )
+
+    def _expand_frame_forces(self, table, design_table, names, station):
+        """Return a df of forces in frames, piers or spandrels, with the design forces ETABS exports
+        separately appended as combinations
+        """
+
+        if self.etabs[table] is None:
             return None
-        
-        if "stepnumber" in self.etabs["spandrel_forces"].columns:
-            df_spandrel_force = (
-                self.etabs["spandrel_forces"]
-                .select("spandrel", "story", "outputcase", "casetype", "steptype", "stepnumber", "location", "p", "v2", "v3", "t", "m2", "m3")
-                .rename({
-                    "casetype": "outputcasetype",
-                    "location": "station",
-                    "p": "fx",
-                    "v2": "fy",
-                    "v3": "fz",
-                    "t": "mxx",
-                    "m2": "myy",
-                    "m3": "mzz",
-                })
-                .with_columns(
-                    station = pl.when(pl.col("station") == "Right").then(pl.lit(1.0)).otherwise(pl.lit(0.0)),
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = (
-                        pl.when(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True) == "").then(pl.lit(None))
-                        .otherwise(pl.concat_str(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""), pl.col("stepnumber"), ignore_nulls=True))
-                    ),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-                .select("spandrel", "story", "station", "outputcase", "outputcasetype", "fx", "fy", "fz", "mxx", "myy", "mzz")
+
+        df = _frame_forces(_standardise_cases(self.etabs[table]), names, station)
+
+        if self.etabs[design_table] is not None:
+            df_design = (
+                self.etabs[design_table]
+                .rename({"combo": "outputcase"})
+                .with_columns(outputcasetype = pl.lit("combination"))
             )
-        elif "steptype" in self.etabs["spandrel_forces"].columns:
-            df_spandrel_force = (
-                self.etabs["spandrel_forces"]
-                .select("spandrel", "story", "outputcase", "casetype", "steptype", "location", "p", "v2", "v3", "t", "m2", "m3")
-                .rename({
-                    "casetype": "outputcasetype",
-                    "location": "station",
-                    "p": "fx",
-                    "v2": "fy",
-                    "v3": "fz",
-                    "t": "mxx",
-                    "m2": "myy",
-                    "m3": "mzz",
-                })
-                .with_columns(
-                    station = pl.when(pl.col("station") == "Right").then(pl.lit(1.0)).otherwise(pl.lit(0.0)),
-                    outputcasetype = (
-                        pl.col("outputcasetype")
-                        .str.replace("LinStatic", "static")
-                        .str.replace("LinModEigen", "modal")
-                        .str.replace("LinRespSpec", "response_spectrum")
-                        .str.replace("Combination", "combination")
-                    ),
-                    outputcasestep = pl.col("steptype"),
-                )
-                .with_columns(
-                    outputcase = pl.concat_str("outputcase", "outputcasestep", separator="_", ignore_nulls=True),
-                )
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-                .select("spandrel", "story", "station", "outputcase", "outputcasetype", "fx", "fy", "fz", "mxx", "myy", "mzz")
-            )
-        else:
-            df_spandrel_force = (
-                self.etabs["spandrel_forces"]
-                .select("spandrel", "story", "outputcase", "casetype", "location", "p", "v2", "v3", "t", "m2", "m3")
-                .rename({
-                    "casetype": "outputcasetype",
-                    "location": "station",
-                    "p": "fx",
-                    "v2": "fy",
-                    "v3": "fz",
-                    "t": "mxx",
-                    "m2": "myy",
-                    "m3": "mzz",
-                })
-                .with_columns(
-                    station = pl.when(pl.col("station") == "Right").then(pl.lit(1.0)).otherwise(pl.lit(0.0))
-                )
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-                .select("spandrel", "story", "station", "outputcase", "outputcasetype", "fx", "fy", "fz", "mxx", "myy", "mzz")
-            )
-        
-        if self.etabs["design_forces_-_spandrels"] is None:
-            pass
-        else:
-            df_spandrel_force = df_spandrel_force.vstack(
-                self.etabs["design_forces_-_spandrels"]
-                .select("spandrel", "story", "combo", "location", "p", "v2", "v3", "t", "m2", "m3")
-                .rename({
-                    "combo": "outputcase",
-                    "location": "station",
-                    "p": "fx",
-                    "v2": "fy",
-                    "v3": "fz",
-                    "t": "mxx",
-                    "m2": "myy",
-                    "m3": "mzz",
-                })
-                .with_columns(
-                    station = pl.when(pl.col("station") == "Right").then(pl.lit(1.0)).otherwise(pl.lit(0.0)),
-                    outputcasetype = pl.lit("combination"),
-                )
-                .cast({
-                    "station": pl.Float64,
-                    "fx": pl.Float64,
-                    "fy": pl.Float64,
-                    "fz": pl.Float64,
-                    "mxx": pl.Float64,
-                    "myy": pl.Float64,
-                    "mzz": pl.Float64,
-                })
-                .select("spandrel", "story", "station", "outputcase", "outputcasetype", "fx", "fy", "fz", "mxx", "myy", "mzz")
-            )
-        
-        return df_spandrel_force
+            df = df.vstack(_frame_forces(df_design, names, station))
+
+        return df
+
+
+def _standardise_cases(df):
+    """Name the case types as the standard model does, and append the step, if any, to the case name
+
+    ETABS adds StepType to envelopes and StepNumber to stepped cases: "ULSENV" with step type "Max"
+    reads as "ULSENV_max", and with step type "Step By Step" and step number 3 as "ULSENV_stepbystep3".
+    """
+
+    df = (
+        df
+        .rename({"casetype": "outputcasetype"})
+        .with_columns(outputcasetype = pl.col("outputcasetype").replace(CASE_TYPES))
+    )
+
+    step = []
+    if "steptype" in df.columns:
+        step.append(pl.col("steptype").str.to_lowercase().str.replace_all(" ", ""))
+    if "stepnumber" in df.columns:
+        step.append(pl.col("stepnumber"))
+    if step:
+        step = pl.concat_str(step, ignore_nulls=True)
+        df = df.with_columns(
+            outputcase = pl.concat_str("outputcase", pl.when(step != "").then(step), separator="_", ignore_nulls=True),
+        )
+
+    return df
+
+def _frame_forces(df, names, station):
+    """Return frame, pier or spandrel forces in the standard model's names, at the given station"""
+
+    return (
+        df
+        .rename({"uniquename": "unique_line"}, strict=False)
+        .with_columns(station.alias("station"))
+        .rename({"p": "fx", "v2": "fy", "v3": "fz", "t": "mxx", "m2": "myy", "m3": "mzz"})
+        .cast({column: pl.Float64 for column in ["station", *FORCES]})
+        .select(*names, "station", "outputcase", "outputcasetype", *FORCES)
+    )
+
+def _station_at(end):
+    """Return station 1 at the given end of a member, "Top" or "Right", and 0 at the other"""
+
+    return pl.when(pl.col("location") == end).then(pl.lit(1.0)).otherwise(pl.lit(0.0))

@@ -1,6 +1,5 @@
-"""Functions for reinforced concrete design calculations
-
-Functions:
+"""Reinforced concrete design checks on DataFrames: each function reads its inputs from columns
+and adds its results as columns, in mm, kN and MPa
 """
 
 import numpy as np
@@ -9,7 +8,7 @@ import polars as pl
 
 from steng.design import ec2
 from steng.design import expressions as rc
-from steng.design._checks import _check_inputs, _drop_outputs
+from steng.design._checks import _check_inputs, _drop_outputs, bar_layers
 
 F_YK = 500.0 #MPa
 
@@ -122,8 +121,8 @@ def calculate_material(df):
 
     return df
 
-def calculate_effective_depth_3(df):
-    """Calculate the effective depth d2 and d3
+def calculate_effective_depth_column(df):
+    """Calculate the effective depths d2 and d3 of a column to its innermost layer of bars
     """
 
     # Validation
@@ -133,8 +132,6 @@ def calculate_effective_depth_3(df):
         "cover": pa.Column(pl.Int32),
         "dia_horz0": pa.Column(pl.Int32),
         "dia_vert0": pa.Column(pl.Int32),
-        "dia_vert1": pa.Column(pl.Int32),
-        "dia_vert2": pa.Column(pl.Int32),
     }).validate(df)
 
     # Input
@@ -142,17 +139,12 @@ def calculate_effective_depth_3(df):
     h = df["h"].to_numpy()                #mm
     cover = df["cover"].to_numpy()        #mm
     dia_horz = df["dia_horz0"].to_numpy()  #mm
-    dia_vert0 = df["dia_vert0"].to_numpy()  #mm
-    dia_vert1 = df["dia_vert0"].to_numpy()  #mm
-    dia_vert2 = df["dia_vert0"].to_numpy()  #mm
-    
-    # Constant
-    # n_rows = df.shape[0]
+    dia_vert = bar_layers(df)            #mm
 
     # Calculations
-    d2 = rc.d3_3(h, cover, dia_horz, dia_vert0, dia_vert1, dia_vert2)
+    d2 = rc.d3(h, cover, dia_horz, *dia_vert)
 
-    d3 = rc.d3_3(b, cover, dia_horz, dia_vert0, dia_vert1, dia_vert2)
+    d3 = rc.d3(b, cover, dia_horz, *dia_vert)
 
     # Output
     return (
@@ -163,76 +155,25 @@ def calculate_effective_depth_3(df):
         )
     )
 
-def calculate_effective_depth_wall_6(df):
-    """Calculate the effective depth d2 and d3
+def calculate_effective_depth_wall(df):
+    """Calculate the effective depths of a wall: d2 in plane, to the end bars, and d3 out of plane,
+    to the innermost layer of bars
     """
-    outputs = ["d2", "d3"]
-    selected = [item for item in outputs if item in df.columns]
-    df = df.drop(selected)
-
-    df.shape[0]
-    columns = ["b", "h", "cover", "dia_horz0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5"]
-    for column in columns:
-        if column not in df.columns:
-            print("Missing column", column)
-            return df
+    df = _drop_outputs(df, ["d2", "d3"])
 
     # Input
+    missing_column = _check_inputs(df, ["b", "h", "cover", "dia_horz0", "dia_vert0"])
+    if missing_column: return df
     b = np.array(df.select("b").to_series())                #mm
     h = np.array(df.select("h").to_series())                #mm
     cover = np.array(df.select("cover").to_series())        #mm
     dia_horz = np.array(df.select("dia_horz0").to_series())  #mm
-    dia_vert0 = np.array(df.select("dia_vert0").to_series())#mm
-    dia_vert1 = np.array(df.select("dia_vert1").to_series())#mm
-    dia_vert2 = np.array(df.select("dia_vert2").to_series())#mm
-    dia_vert3 = np.array(df.select("dia_vert3").to_series())#mm
-    dia_vert4 = np.array(df.select("dia_vert4").to_series())#mm
-    dia_vert5 = np.array(df.select("dia_vert5").to_series())#mm
-    
-    # Constant
+    dia_vert = bar_layers(df)                              #mm
 
     # Calculations
-    d2 = rc.d2(h, cover, dia_horz, dia_vert0)
+    d2 = rc.d2(h, cover, dia_horz, dia_vert[0])
 
-    d3 = rc.d3_6(b, cover, dia_horz, dia_vert0, dia_vert1, dia_vert2, dia_vert3, dia_vert4, dia_vert5)
-
-    # Output
-    df = df.hstack(
-        pl.DataFrame({
-            "d2": d2,
-            "d3": d3,
-        })
-    )
-
-    return df
-
-def calculate_effective_depth_single_layer(df):
-    """Calculate the effective depth d2 and d3
-    """
-    outputs = ["d2", "d3"]
-    selected = [item for item in outputs if item in df.columns]
-    df = df.drop(selected)
-
-    df.shape[0]
-    columns = ["b", "h", "cover", "dia_horz0", "dia_vert0"]
-    for column in columns:
-        if column not in df.columns:
-            print("Missing column", column)
-            return df
-
-    # Input
-    b = np.array(df.select("b").to_series())                #mm
-    h = np.array(df.select("h").to_series())                #mm
-    cover = np.array(df.select("cover").to_series())        #mm
-    dia_horz = np.array(df.select("dia_horz0").to_series())  #mm
-    dia_vert = np.array(df.select("dia_vert0").to_series())  #mm
-    
-    # Constant
-
-    # Calculations
-    d2 = rc.d2(h, cover, dia_horz, dia_vert)
-
-    d3 = rc.d3(b, cover, dia_horz, dia_vert)
+    d3 = rc.d3(b, cover, dia_horz, *dia_vert)
 
     # Output
     df = df.hstack(
@@ -263,8 +204,8 @@ def calculate_effective_length_wall(df):
     # Calculations
     beta_restraint = ec2.cl12_6_5_1_beta(n_side_restrained, h, l)
 
-    l_02 = rc.l_02(l, k2, beta_restraint) #m
-    l_03 = rc.l_0(l, k3) #m
+    l_02 = rc.l_0(l, k2) #m, in plane
+    l_03 = rc.l_0_restrained(l, k3, beta_restraint) #m, out of plane
     l_02 *= 1e3 #mm
     l_03 *= 1e3 #mm
 
@@ -345,8 +286,8 @@ def calculate_eccentricity_0_i(df):
     e_i2 = ec2.exp5_2_e_i(theta_i, l_02) #mm
     e_i3 = ec2.exp5_2_e_i(theta_i, l_03) #mm
 
-    e_02 = ec2.cl6_1_4_e_0(h) #mm
-    e_03 = ec2.cl6_1_4_e_0(b) #mm
+    e_02 = ec2.cl6_1_4_e_0(h * 1e3) #mm
+    e_03 = ec2.cl6_1_4_e_0(b * 1e3) #mm
 
     # Output
     df = df.hstack(
@@ -413,8 +354,11 @@ def calculate_creep(df):
 
     return df
 
-def calculate_slenderness_3(df):
+def calculate_slenderness(df, section="wall"):
     """Calculate the slenderness limit in both directions
+
+    section is "wall", with each layer of bars on both faces at s_vert0, or "column", with n_vert0
+    bars in each layer. Every dia_vert0, dia_vert1, ... layer present counts towards A_s.
     """
     outputs = [
         "A", "A_s", "A_c", "omega", "B", "n", "lambda_lim", "lambda2",
@@ -424,7 +368,9 @@ def calculate_slenderness_3(df):
     df = df.drop(selected)
 
     df.shape[0]
-    columns = ["f_yd", "f_cd", "b", "h", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "p", "l_02", "l_03", "phi_ef"]
+    columns = ["f_yd", "f_cd", "b", "h", "s_vert0", "dia_vert0", "p", "l_02", "l_03", "phi_ef"]
+    if section == "column":
+        columns.append("n_vert0")
     for column in columns:
         if column not in df.columns:
             print("Missing column", column)
@@ -436,20 +382,21 @@ def calculate_slenderness_3(df):
     b = np.array(df.select("b").to_series())                #mm
     h = np.array(df.select("h").to_series())                #mm
     s_vert = np.array(df.select("s_vert0").to_series())     #mm
-    dia_vert0 = np.array(df.select("dia_vert0").to_series())#mm
-    dia_vert1 = np.array(df.select("dia_vert1").to_series())#mm
-    dia_vert2 = np.array(df.select("dia_vert2").to_series())#mm
+    dia_vert = bar_layers(df)                              #mm
     N_Ed = np.array(df.select("p").to_series())             #kN
     l_02 = np.array(df.select("l_02").to_series())          #mm
     l_03 = np.array(df.select("l_03").to_series())          #mm
     phi_ef = np.array(df.select("phi_ef").to_series())      #-
-    
+
     # Constant
 
     # Calculations
     A = ec2.exp5_13_N_A(phi_ef) #-
 
-    A_s = rc.A_s_wall_3(s_vert, dia_vert0, dia_vert1, dia_vert2, h) #mm^2
+    if section == "column":
+        A_s = rc.A_s_column(df["n_vert0"].to_numpy(), *dia_vert) #mm^2
+    else:
+        A_s = rc.A_s_wall(s_vert, h, *dia_vert) #mm^2
 
     A_c = rc.A_c(h, b) #mm^2
     
@@ -732,77 +679,6 @@ def calculate_moment_capacity_simplified_biaxial(df):
 
     return df
 
-def calculate_ur_biaxial(df):
-    """Calculate the utilisation ratio biaxial
-    """
-    outputs = [
-        "e_2", "e_3", "x_2", "x_3", "is_biaxial", 
-        "ur_p", "alpha", "ur_m2", "ur_m3", "ur_biaxial",
-    ]
-    selected = [item for item in outputs if item in df.columns]
-    df = df.drop(selected)
-
-    df.shape[0]
-    columns = ["b", "h", "p", "n_rd", "m2_rd", "m3_rd", "m2", "m3"]
-    for column in columns:
-        if column not in df.columns:
-            print("Missing column", column)
-            return df
-
-    # Input
-    b = np.array(df.select("b").to_series())                        #mm
-    h = np.array(df.select("h").to_series())                        #mm
-    p = np.array(df.select("p").to_series())                        #kN
-    m2 = np.array(df.select("m2").to_series())      #kNm
-    m3 = np.array(df.select("m3").to_series())      #kNm
-    n_rd = np.array(df.select("n_rd").to_series())                  #kNm
-    m2_rd = np.array(df.select("m2_rd").to_series())                #kNm
-    m3_rd = np.array(df.select("m3_rd").to_series())                #kNm
-    lambda2 = np.array(df.select("lambda2").to_series())            #-
-    lambda3 = np.array(df.select("lambda3").to_series())            #-
-    
-    # Constant
-
-    # Calculations
-    e_2 = ec2.exp5_38_b_e_2(m2, p)
-    e_3 = ec2.exp5_38_b_e_2(m3, p)
-
-    x_2 = ec2.exp5_38_b_x(e_2, e_3, h, b)
-    x_3 = ec2.exp5_38_b_x(e_3, e_2, b, h)
-
-    is_biaxial = np.logical_not(np.logical_and(
-        np.logical_and((lambda2 / lambda3) <= 2, (lambda3 / lambda3) <= 2),
-        np.logical_and(x_2 <= 0.2, x_3 <= 0.2)
-    ))
-
-    ur_p = ec2.exp5_39_N_Ed_N_Rd(p, n_rd)
-
-    alpha = ec2.exp5_39_alpha(ur_p)
-
-    ur_m2 = ec2.exp5_39_M_Ed_M_Rd(m2, m2_rd)
-    ur_m3 = ec2.exp5_39_M_Ed_M_Rd(m3, m3_rd)
-
-    ur_biaxial = ec2.exp5_39_ur_biaxial(ur_m2, ur_m3, alpha)
-    ur_biaxial[np.logical_not(is_biaxial)] = 0
-
-    # Output
-    df = df.hstack(
-        pl.DataFrame({
-            "e_2": e_2,
-            "e_3": e_3,
-            "x_2": x_2,
-            "x_3": x_3,
-            "is_biaxial": is_biaxial,
-            "ur_p": ur_p,
-            "alpha": alpha,
-            "ur_m2": ur_m2,
-            "ur_m3": ur_m3,
-            "ur_biaxial": ur_biaxial,
-        })
-    )
-
-    return df
-
 def calculate_ur_biaxial_eccentricity(df):
     """Calculate the utilisation ratio biaxial
     """
@@ -841,9 +717,11 @@ def calculate_ur_biaxial_eccentricity(df):
     x_2 = ec2.exp5_38_b_x(e_2, e_3, h, b)
     x_3 = ec2.exp5_38_b_x(e_3, e_2, b, h)
 
+    # 5.8.9(3): no biaxial check if the slenderness ratios are within 2 (5.38a) and either relative
+    # eccentricity ratio is at most 0.2 (5.38b)
     is_biaxial = np.logical_not(np.logical_and(
-        np.logical_and((lambda2 / lambda3) <= 2, (lambda3 / lambda3) <= 2),
-        np.logical_and(x_2 <= 0.2, x_3 <= 0.2)
+        np.logical_and((lambda2 / lambda3) <= 2, (lambda3 / lambda2) <= 2),
+        np.logical_or(x_2 <= 0.2, x_3 <= 0.2)
     ))
 
     ur_p = ec2.exp5_39_N_Ed_N_Rd(p, n_rd)
@@ -1004,15 +882,15 @@ def calculate_pv3_design(df):
 
     return df
 
-def calculate_capacity_shear_concrete_6(df):
-    """Calculate capacity of shear with concrete only
+def calculate_capacity_shear_concrete(df):
+    """Calculate capacity of shear with concrete only, with d to the innermost layer of bars
     """
     outputs = ["d", "k", "rho_l", "A_c", "sigma_cp", "v_min", "V_Rdc", "ur_vc"]
     selected = [item for item in outputs if item in df.columns]
     df = df.drop(selected)
 
     n_rows = df.shape[0]
-    columns = ["N_Ed", "V_Ed", "f_ck", "f_cd", "h", "b_w", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5", "cover", "dia_horz0"]
+    columns = ["N_Ed", "V_Ed", "f_ck", "f_cd", "h", "b_w", "dia_vert0", "cover", "dia_horz0"]
     for column in columns:
         if column not in df.columns:
             print("Missing column", column)
@@ -1025,12 +903,7 @@ def calculate_capacity_shear_concrete_6(df):
     f_cd = np.array(df.select("f_cd").to_series())                                      #MPa
     h = np.array(df.select("h").to_series())                                            #mm
     b_w = np.array(df.select("b_w").to_series())                                        #mm
-    dia_vert0 = np.array(df.select("dia_vert0").to_series())                            #mm
-    dia_vert1 = np.array(df.select("dia_vert1").to_series())                            #mm
-    dia_vert2 = np.array(df.select("dia_vert2").to_series())                            #mm
-    dia_vert3 = np.array(df.select("dia_vert3").to_series())                            #mm
-    dia_vert4 = np.array(df.select("dia_vert4").to_series())                            #mm
-    dia_vert5 = np.array(df.select("dia_vert5").to_series())                            #mm
+    dia_vert = bar_layers(df)                                                          #mm
     cover = np.array(df.select("cover").to_series())                                    #mm
     dia_horz = np.array(df.select("dia_horz0").to_series())                              #mm
     effective_depth_factor = np.array(df.select("effective_depth_factor").to_series())  #-
@@ -1038,10 +911,10 @@ def calculate_capacity_shear_concrete_6(df):
     # Constant
 
     # Calculations
-    d = rc.d3_6(h, cover, dia_horz, dia_vert0, dia_vert1, dia_vert2, dia_vert3, dia_vert4, dia_vert5) #mm
+    d = rc.d3(h, cover, dia_horz, *dia_vert) #mm
     d *= effective_depth_factor #mm
 
-    A_sl = 0.002827 * b_w * d #mm^2
+    A_sl = 0.002827 * b_w * d #mm^2, assumed: rho_l = 0.28%, H12 at 200 mm on each face of a 400 mm wall
     
     k = ec2.exp6_2_a_k(d) #-
 
@@ -1103,9 +976,9 @@ def calculate_capacity_shear_max(df):
     # Calculations
     v = ec2.exp6_6_N_v(f_ck) #-
 
-    z = rc.z5(d) #mm
+    z = rc.z9(d) #mm
 
-    V_Rd_max = ec2.exp6_9_V_Rd_max(alpha_cw, b_w, d, v, f_cd, theta) #kN
+    V_Rd_max = ec2.exp6_9_V_Rd_max(alpha_cw, b_w, z, v, f_cd, theta) #kN
 
     ur_vmax = V_Ed / V_Rd_max
 
@@ -1121,15 +994,15 @@ def calculate_capacity_shear_max(df):
 
     return df
 
-def calculate_required_shear_reo_wall6(df):
-    """Calculate the required shear reo
+def calculate_required_shear_reo_wall(df):
+    """Calculate the required shear reo, and the minimum horizontal bars from the vertical (9.6.3)
     """
     outputs = ["theta", "A_sw_s_req", "A_sw_s_min1", "A_sw_s_min2"]
     selected = [item for item in outputs if item in df.columns]
     df = df.drop(selected)
 
     df.shape[0]
-    columns = ["f_ck", "f_yd", "b_w", "d", "s_vert0", "dia_vert0", "dia_vert1", "dia_vert2", "dia_vert3", "dia_vert4", "dia_vert5", "V_Ed"]
+    columns = ["f_ck", "f_yd", "b_w", "d", "s_vert0", "dia_vert0", "V_Ed"]
     for column in columns:
         if column not in df.columns:
             print("Missing column", column)
@@ -1141,12 +1014,7 @@ def calculate_required_shear_reo_wall6(df):
     b_w = np.array(df.select("b_w").to_series())            #mm
     d = np.array(df.select("d").to_series())                #mm
     s_vert = np.array(df.select("s_vert0").to_series())      #mm
-    dia_vert0 = np.array(df.select("dia_vert0").to_series())#mm
-    dia_vert1 = np.array(df.select("dia_vert1").to_series())#mm
-    dia_vert2 = np.array(df.select("dia_vert2").to_series())#mm
-    dia_vert3 = np.array(df.select("dia_vert3").to_series())#mm
-    dia_vert4 = np.array(df.select("dia_vert4").to_series())#mm
-    dia_vert5 = np.array(df.select("dia_vert5").to_series())#mm
+    dia_vert = bar_layers(df)                              #mm
     N_Ed = np.array(df.select("N_Ed").to_series())          #kN
     V_Ed = np.array(df.select("V_Ed").to_series())          #kN
     
@@ -1155,9 +1023,9 @@ def calculate_required_shear_reo_wall6(df):
     # Calculations
     theta = ec2.exp_6_9_theta(V_Ed, b_w, d, f_ck, N_Ed)
 
-    A_sw_s_req = ec2.exp6_8_A_sw_s(V_Ed, d, f_yd, theta)
+    A_sw_s_req = ec2.exp6_8_A_sw_s(V_Ed, rc.z9(d), f_yd, theta)
 
-    A_sw_s_min1 = ec2.cl9_6_3_1_A_sw_s_min1(s_vert, dia_vert0, dia_vert1, dia_vert2, dia_vert3, dia_vert4, dia_vert5)
+    A_sw_s_min1 = ec2.cl9_6_3_1_A_sw_s_min1(s_vert, *dia_vert)
 
     A_sw_s_min2 = ec2.cl9_6_3_1_A_sw_s_min2(b_w)
 
@@ -1200,7 +1068,7 @@ def calculate_required_shear_reo_single_layer_column(df, direction):
     # Calculations
     theta = ec2.exp_6_9_theta(V_Ed, b_w, d, f_ck, N_Ed)
 
-    A_sw_s_req = ec2.exp6_8_A_sw_s(V_Ed, d, f_yd, theta)
+    A_sw_s_req = ec2.exp6_8_A_sw_s(V_Ed, rc.z9(d), f_yd, theta)
 
     # Output
     df = df.hstack(

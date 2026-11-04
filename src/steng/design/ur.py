@@ -1,10 +1,4 @@
-"""A library of classes for calculating utilisation ratios.
-
-Classes:
-FMC_2D -- A class for calculating utilisation ratios in 2D force moment 
-    interaction curves
-
-Functions:
+"""Utilisation ratios of design forces against force-moment curves and failure surfaces
 """
 
 import math

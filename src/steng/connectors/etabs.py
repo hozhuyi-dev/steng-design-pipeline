@@ -1,12 +1,4 @@
-"""A library that wraps the ETABS API.
-
-Classes:
-ETABS -- A class attach to an instance with useful methods
-
-Functions:
-set_load_*_selected -- Set the load patterns/cases/combinations.
-get_tables -- Get tables as polars DataFrame.
-write_tables -- Write tables as parquet or csv.
+"""Etabs: wrapper over the ETABS API, through pythonnet: materials, sections, piers and objects, and table exports
 """
 
 import sys

@@ -1,14 +1,11 @@
-"""A class for logic working on standardised model and also on multiple children sessions
-
-Classes:
-Session -- A class for working standardised model
-
-Functions:
+"""Session: the standard model, one Polars DataFrame per attribute, with a child session per model revision
 """
 
 import datetime
 import os
+import re
 from importlib.resources import files
+from typing import TypeVar
 
 import numpy as np
 import polars as pl
@@ -80,6 +77,8 @@ TYPES = {
     "zs": pl.List(pl.Float64),
 }
 
+S = TypeVar("S", bound="Session")
+
 SCHEMA = {
     # GEOMETRY
     # TODO property modifier, end releases, shelltype, group
@@ -122,9 +121,20 @@ SCHEMA = {
 }
 
 class Session(DetMixin, EtabsMixin, RhinoMixin, SafeMixin, LogMixin):
-    def __init__(self, name=None):
-        """Initialise an instance of model
-        """
+    """The standard model of a structure: one Polars DataFrame per attribute in SCHEMA
+
+    A session read from several models holds each as a child session in sessions, keyed by model name,
+    and get_df returns an attribute across all of them, stamped with each model's datetime and name.
+
+    Attributes:
+        name: The model name, from its file or export folder.
+        datetime: When the model was saved or exported, as "YYYYmmdd-HHMMSS".
+        sessions: Child sessions by model name.
+        story, point, beam, ..., force_spandrel: One DataFrame per attribute in SCHEMA, in kN and m.
+    """
+
+    def __init__(self, name: str | None = None) -> None:
+        """Start an empty session, every attribute an empty DataFrame of its SCHEMA columns"""
 
         self.datetime = datetime.datetime.today().strftime("%Y%m%d-%H%M%S")
         self.name = name
@@ -158,8 +168,17 @@ class Session(DetMixin, EtabsMixin, RhinoMixin, SafeMixin, LogMixin):
     
     # ----- create -----
 
-    def read_models(self, files, abs_path=None, format="parquet", purpose="all"):
-        """Read all the given models as children sessions
+    def read_models(
+            self: S, files: str | list[str], abs_path: str | None = None, format: str = "parquet", purpose: str = "all",
+        ) -> S:
+        """Read each model as a child session, keyed by its model name
+
+        Args:
+            files: ETABS text files ("tower_rev01.$et") under abs_path/etabs, or ETABS table export
+                folders named <datetime>_<model>_<purpose>_etabs, as Etabs.write_tables writes them.
+            abs_path: The folder holding the etabs folder; the working directory if None.
+            format: The table exports' format, "parquet" or "csv".
+            purpose: The column of data/etabs_tables.csv that lists the tables to read.
         """
 
         files = convert_to_list(files)
@@ -169,25 +188,45 @@ class Session(DetMixin, EtabsMixin, RhinoMixin, SafeMixin, LogMixin):
                 name = file.split(".")[0]
                 self.sessions[name] = Session(name).read_det(file, abs_path=abs_path)
             elif file.endswith("_etabs"):
-                length_model = len(file.split("_"))
-                name = "_".join(file.split("_")[1:(length_model - 2)])
+                name = _split_export_name(file)[1]
                 self.sessions[name] = Session(name).read_etabs(file, abs_path=abs_path, format=format, purpose=purpose)
 
         return self
     
-    def read_model(self, folder=R".\model", format="parquet"):
-        """Read standardised model into class
+    def read_model(self: S, folder: str, format: str = "parquet") -> S:
+        """Read a standard model written by write_model, one file per attribute
+
+        Args:
+            folder: The folder write_model wrote, <datetime>_<name>_model.
+            format: "parquet" or "csv".
         """
+
+        if not os.path.isdir(folder):
+            raise FileNotFoundError(folder)
+        self.datetime, self.name = _split_export_name(os.path.basename(os.path.normpath(folder)))[:2]
+
+        for attribute, schema in SCHEMA.items():
+            path = os.path.join(folder, attribute + "." + format)
+            if not os.path.exists(path):
+                continue
+            df = pl.read_parquet(path) if format == "parquet" else pl.read_csv(path)
+            setattr(self, attribute, _cast_df(df, schema, include_custom=True))
 
         return self
     
-    def read_det(self, file, abs_path=None, folder=r"./etabs"):
-        """Read det into class
+    def read_det(self: S, file: str, abs_path: str | None = None, folder: str = r"./etabs") -> S:
+        """Read the geometry of an ETABS text file (.$et) into this session, dated when it was saved
+
+        Args:
+            file: The file name, which becomes the session's name without its extension.
+            abs_path: The folder holding folder; the working directory if None.
+            folder: The folder holding the file.
         """
         
-        self.datetime = datetime.datetime.today().strftime("%Y%m%d-%H%M%S")
+        path = _append_abs_path(abs_path, folder + os.sep + file)
+        self.datetime = _read_saved_datetime(path) or datetime.datetime.today().strftime("%Y%m%d-%H%M%S")
         self.name = file.split(".")[0]
-        self.det = DetMixin._read_det(self, _append_abs_path(abs_path, folder + os.sep + file))
+        self.det = DetMixin._read_det(self, path)
 
         self.unit_force, self.unit_length, self.unit_temperature = _convert_unit_to_multiplier(*DetMixin._expand_unit(self))
 
@@ -207,12 +246,21 @@ class Session(DetMixin, EtabsMixin, RhinoMixin, SafeMixin, LogMixin):
 
         return self
     
-    def read_etabs(self, subfolder, abs_path=None, folder=r"./etabs", format="parquet", purpose="all"):
-        """Read the model dfs from etabs
+    def read_etabs(
+            self: S, subfolder: str, abs_path: str | None = None, folder: str = r"./etabs",
+            format: str = "parquet", purpose: str = "all",
+        ) -> S:
+        """Read an ETABS table export into this session: geometry, and results where exported
+
+        Args:
+            subfolder: The export folder, <datetime>_<model>_<purpose>_etabs.
+            abs_path: The folder holding folder; the working directory if None.
+            folder: The folder holding the export folders.
+            format: The tables' format, "parquet" or "csv".
+            purpose: The column of data/etabs_tables.csv that lists the tables to read.
         """
 
-        self.datetime = subfolder.split("_")[0]
-        self.name = "_".join(subfolder.split("_")[3:])
+        self.datetime, self.name = _split_export_name(subfolder)[:2]
         self.etabs = _read_dfs(
             abs_path, folder, subfolder, 
             pl.read_csv(files("steng") / "data" / "etabs_tables.csv").filter(pl.col(purpose) == 1)["table"].to_list(), 
@@ -247,8 +295,13 @@ class Session(DetMixin, EtabsMixin, RhinoMixin, SafeMixin, LogMixin):
 
         return self
     
-    def from_rhino(self, attribute, x, y, z, keys, values):
-        """Read from rhino
+    def from_rhino(self: S, attribute: str, x: list, y: list, z: list, keys: list[str], values: list) -> S:
+        """Set an attribute from Rhino geometry, as a Grasshopper component passes it
+
+        Args:
+            attribute: The attribute to set, "point", "column", "wall", ...
+            x, y, z: The coordinates of each object's vertices [m].
+            keys, values: Each object's other columns and their values, such as "story" and "grade".
         """
 
         self.__setattr__(attribute, _cast_df(
@@ -260,12 +313,17 @@ class Session(DetMixin, EtabsMixin, RhinoMixin, SafeMixin, LogMixin):
 
         return self
 
-    def create_latest_model(self):
-        """Create self with the model in latest child session
+    def create_latest_model(self: S) -> S:
+        """Copy the latest child session's attributes and units into this session
+
+        The latest is the child session with the most recent datetime. The children stay in sessions,
+        so get_df still returns every revision.
         """
 
         self.name = self.get_df_head("story", 1).select("model").unique().item()
-        self.unit_force, self.unit_length, self.unit_temperature = self.sessions[self.name].unit_force, self.sessions[self.name].unit_length, self.sessions[self.name].unit_temperature
+        latest = self.sessions[self.name]
+        self.datetime = latest.datetime
+        self.unit_force, self.unit_length, self.unit_temperature = latest.unit_force, latest.unit_length, latest.unit_temperature
 
         self = self._clone_attributes(self.name, list(SCHEMA.keys()))
 
@@ -291,8 +349,14 @@ class Session(DetMixin, EtabsMixin, RhinoMixin, SafeMixin, LogMixin):
 
     # ----- read -----
 
-    def get_df(self, attribute):
-        """Return the concatenated df of a specific attribute
+    def get_df(self, attribute: str) -> pl.DataFrame | None:
+        """Return an attribute of every child session stacked, with datetime and model columns first
+
+        Args:
+            attribute: The attribute, "story", "wall", "story_drift", ...
+
+        Returns:
+            None if there are no child sessions.
         """
 
         df = None
@@ -319,8 +383,8 @@ class Session(DetMixin, EtabsMixin, RhinoMixin, SafeMixin, LogMixin):
         
         return df
 
-    def get_df_with_story(self, attribute):
-        """Return a df with story
+    def get_df_with_story(self, attribute: str) -> pl.DataFrame:
+        """Return get_df(attribute) joined to each model's stories, adding elev and height
         """
 
         return (
@@ -328,16 +392,16 @@ class Session(DetMixin, EtabsMixin, RhinoMixin, SafeMixin, LogMixin):
             .join(self.get_df("story"), on=["datetime", "model", "story"])
         )
     
-    def get_df_head(self, attribute, number):
-        """Return the head df of a specific attribute
+    def get_df_head(self, attribute: str, number: int) -> pl.DataFrame:
+        """Return get_df(attribute) for the latest number of models only, by datetime
         """
 
         datetimes = self.get_df(attribute).select("datetime").unique().sort("datetime", descending=True).head(number).to_series().to_list()
         
         return self.get_df(attribute).filter(pl.col("datetime").is_in(datetimes))
     
-    def get_df_head_with_story(self, attribute, number):
-        """Return the head df of a specific attribute with story
+    def get_df_head_with_story(self, attribute: str, number: int) -> pl.DataFrame:
+        """Return get_df_head(attribute, number) joined to each model's stories, adding elev and height
         """
         
         return (
@@ -457,8 +521,13 @@ class Session(DetMixin, EtabsMixin, RhinoMixin, SafeMixin, LogMixin):
     
     # ----- update -----
     
-    def update(self, attributes, df, on):
-        """Update df data based on given df
+    def update(self: S, attributes: str | list[str], df: pl.DataFrame, on: str | list[str]) -> S:
+        """Overwrite values of one or more attributes from df, matching rows on the given columns
+
+        Nulls in df leave the values as they were, as polars DataFrame.update does. Use it to set design
+        inputs per member, such as effective length factors:
+
+            session.update("wall", df_k, on=["pier", "story"])
         """
 
         attributes = convert_to_list(attributes)
@@ -502,8 +571,12 @@ class Session(DetMixin, EtabsMixin, RhinoMixin, SafeMixin, LogMixin):
 
     # ----- out -----
 
-    def write_model(self, folder=R".\model", format="parquet"):
-        """Write standardised model to file
+    def write_model(self: S, folder: str = R".\model", format: str = "parquet") -> S:
+        """Write every attribute to its own file in folder/<datetime>_<name>_model, for read_model
+
+        Args:
+            folder: The folder to write the model folder in.
+            format: "parquet" or "csv".
         """
 
         folder = folder + os.sep + self.datetime + "_" + self.name + "_model"
@@ -519,6 +592,39 @@ class Session(DetMixin, EtabsMixin, RhinoMixin, SafeMixin, LogMixin):
 
         return self
     
+def _read_saved_datetime(path):
+    """Return when an ETABS text file was saved, from its "$ File ... saved" line, or None
+
+    ETABS writes the date month first, with a 12-hour clock: "saved 5/6/2025 10:15:00 AM".
+    """
+
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            match = re.match(r"\$ File .* saved (\S+ \S+(?: [AP]M)?)\s*$", line)
+            if match:
+                for format in ["%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S"]:
+                    try:
+                        return datetime.datetime.strptime(match.group(1), format).strftime("%Y%m%d-%H%M%S")
+                    except ValueError:
+                        continue
+            if line.strip() and not line.startswith("$ File"):
+                return None
+
+    return None
+
+def _split_export_name(folder):
+    """Return the datetime, model name and purpose of an export folder's name
+
+    ETABS table exports are <datetime>_<model>_<purpose>_etabs and write_model writes
+    <datetime>_<model>_model, without a purpose. Model names may contain underscores.
+    """
+
+    parts = folder.split("_")
+    if parts[-1] == "etabs":
+        return parts[0], "_".join(parts[1:-2]), parts[-2]
+
+    return parts[0], "_".join(parts[1:-1]), None
+
 def _read_df(abs_path, folder, subfolder, file, format):
     """Read df and format
     """
